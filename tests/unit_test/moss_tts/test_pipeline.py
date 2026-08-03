@@ -21,6 +21,8 @@ from benchmarks.tasks.tts import (
     _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts.delay_pattern import split_moss_audio_segments
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
@@ -129,7 +131,55 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     preprocessing = next(
         stage for stage in config.stages if stage.name == "preprocessing"
     )
-    assert preprocessing.factory_args == {"dtype": "float32"}
+    vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
+    assert preprocessing.factory_args == {"device": "cpu", "dtype": "float32"}
+    assert vocoder.factory_args == {"dtype": "bfloat16"}
+
+
+def test_moss_tts_production_config_resolves_codec_memory_policy() -> None:
+    config = ConfigManager.from_file("examples/configs/moss_tts.yaml").config
+
+    assert isinstance(config, MossTTSPipelineConfig)
+    stages = {stage.name: stage for stage in config.stages}
+    preprocessing_args = resolve_stage_factory_args(
+        stages["preprocessing"], config, gpu_id=0
+    )
+    vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=0)
+
+    assert preprocessing_args == {
+        "device": "cpu",
+        "dtype": "float32",
+        "model_path": "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "gpu_id": 0,
+    }
+    assert vocoder_args == {
+        "dtype": "bfloat16",
+        "model_path": "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "gpu_id": 0,
+    }
+
+
+def test_moss_tts_codec_runtime_overrides_take_precedence() -> None:
+    config = MossTTSPipelineConfig(
+        model_path="model",
+        runtime_overrides={
+            "preprocessing": {"device": "cuda:7", "dtype": "bfloat16"},
+            "vocoder": {"device": "cpu", "dtype": "float32"},
+        },
+    )
+    stages = {stage.name: stage for stage in config.stages}
+
+    preprocessing_args = resolve_stage_factory_args(
+        stages["preprocessing"], config, gpu_id=2
+    )
+    vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=2)
+
+    assert preprocessing_args["device"] == "cuda:7"
+    assert preprocessing_args["dtype"] == "bfloat16"
+    assert preprocessing_args["gpu_id"] == 2
+    assert vocoder_args["device"] == "cpu"
+    assert vocoder_args["dtype"] == "float32"
+    assert vocoder_args["gpu_id"] == 2
 
 
 def test_moss_tts_preprocessing_factory_receives_placement_gpu_id() -> None:
@@ -642,6 +692,7 @@ def test_moss_tts_vocoder_honors_explicit_codec_path(
     stages.create_vocoder_executor(
         "model",
         device="cpu",
+        gpu_id=2,
         codec_model_path="explicit-codec",
     )
 

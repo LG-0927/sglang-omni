@@ -38,6 +38,16 @@ sgl-omni serve \
   --port 8000
 ```
 
+The default model-specific layout keeps the FP32 reference encoder on CPU and
+loads the GPU vocoder in BF16. This removes one codec copy from GPU and halves
+the parameter memory of the remaining codec. It is a qualification layout, not
+a claim that 24 GB or 32 GB cards are supported without the hardware validation
+and bounded runtime settings tracked in [#1291](https://github.com/sgl-project/sglang-omni/issues/1291).
+
+Both policies can be changed explicitly through the preprocessing/vocoder
+`runtime_overrides` entries when profiling another layout. Explicit `device`
+values take precedence over the GPU selected by stage placement.
+
 ## Synthesizing Speech
 
 ### Basic Speech
