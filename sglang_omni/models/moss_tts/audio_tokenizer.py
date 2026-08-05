@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from typing import Any
 
 import torch
@@ -24,13 +25,34 @@ def _torch_dtype(dtype: str | torch.dtype) -> torch.dtype:
     return getattr(torch, dtype) if isinstance(dtype, str) else dtype
 
 
+def _model_floating_dtype(model: Any) -> torch.dtype:
+    parameters = getattr(model, "parameters", None)
+    if not callable(parameters):
+        return torch.float32
+    return next(
+        (
+            parameter.dtype
+            for parameter in parameters()
+            if parameter.is_floating_point()
+        ),
+        torch.float32,
+    )
+
+
 class MossTTSAudioTokenizer:
     """Processor-compatible wrapper around a separately loaded codec model."""
 
     def __init__(self, model: Any, *, device: str) -> None:
         self.model = model
         self.device = str(device)
+        self.dtype = _model_floating_dtype(model)
         self.sample_rate = int(model.config.sampling_rate)
+
+    def _decode_autocast(self) -> Any:
+        device_type = torch.device(self.device).type
+        if device_type == "cuda" and self.dtype in {torch.float16, torch.bfloat16}:
+            return torch.autocast(device_type=device_type, dtype=self.dtype)
+        return nullcontext()
 
     def encode_waveforms(
         self,
@@ -143,7 +165,7 @@ class MossTTSAudioTokenizer:
             audio_codes[:, index, :length] = item
             padding_mask[index, :length] = True
 
-        with torch.inference_mode():
+        with torch.inference_mode(), self._decode_autocast():
             decoded = self.model.decode(
                 audio_codes,
                 padding_mask=padding_mask,
