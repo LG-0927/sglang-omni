@@ -884,7 +884,56 @@ def test_moss_tts_audio_tokenizer_preserves_processor_code_layout() -> None:
         ("cpu", torch.bfloat16, []),
     ],
 )
-def test_moss_tts_audio_tokenizer_decode_autocast_matches_model_dtype(
+def test_moss_tts_audio_tokenizer_encode_autocast_matches_model_dtype(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    dtype: torch.dtype,
+    expected: list[tuple[str, torch.dtype]],
+) -> None:
+    from sglang_omni.models.moss_tts import audio_tokenizer as audio_tokenizer_mod
+
+    class FakeCodec(torch.nn.Module):
+        config = SimpleNamespace(sampling_rate=24000)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.empty(1, dtype=dtype))
+
+        def batch_encode(self, waveforms, num_quantizers):
+            return SimpleNamespace(
+                audio_codes=torch.ones(1, 1, 1, dtype=torch.long),
+                audio_codes_lengths=torch.ones(1, dtype=torch.long),
+            )
+
+    calls: list[tuple[str, torch.dtype]] = []
+
+    def fake_autocast(*, device_type: str, dtype: torch.dtype):
+        calls.append((device_type, dtype))
+        return nullcontext()
+
+    monkeypatch.setattr(audio_tokenizer_mod.torch, "autocast", fake_autocast)
+    tokenizer = audio_tokenizer_mod.MossTTSAudioTokenizer(FakeCodec(), device=device)
+    monkeypatch.setattr(
+        tokenizer,
+        "_prepare_waveform",
+        lambda wav, sample_rate: wav,
+    )
+
+    tokenizer.encode_waveforms([(torch.zeros(1), 24000)])
+
+    assert calls == expected
+
+
+@pytest.mark.parametrize(
+    ("device", "dtype", "expected"),
+    [
+        ("cuda:0", torch.bfloat16, [("cuda", torch.bfloat16)]),
+        ("cuda:0", torch.float16, [("cuda", torch.float16)]),
+        ("cuda:0", torch.float32, []),
+        ("cpu", torch.bfloat16, []),
+    ],
+)
+def test_moss_tts_audio_tokenizer_autocast_matches_model_dtype(
     monkeypatch: pytest.MonkeyPatch,
     device: str,
     dtype: torch.dtype,
@@ -908,7 +957,7 @@ def test_moss_tts_audio_tokenizer_decode_autocast_matches_model_dtype(
     monkeypatch.setattr(audio_tokenizer_mod.torch, "autocast", fake_autocast)
     tokenizer = audio_tokenizer_mod.MossTTSAudioTokenizer(FakeCodec(), device=device)
 
-    with tokenizer._decode_autocast():
+    with tokenizer._autocast():
         pass
 
     assert calls == expected
