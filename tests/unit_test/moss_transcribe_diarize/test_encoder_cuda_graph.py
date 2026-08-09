@@ -143,18 +143,24 @@ def test_graph_bit_identical_to_eager(encoder_bundle, n):
     )
 
 
-def test_over_largest_bucket_falls_back_to_eager(encoder_bundle):
-    """A chunk count above the largest captured bucket falls back to eager and
-    still matches a direct eager call."""
+def test_over_largest_bucket_uses_graph_microbatches(encoder_bundle):
+    """A chunk count above the largest bucket replays bounded graph batches."""
     encoder, num_mel_bins, _ = encoder_bundle
     runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, _INPUT_FEATURE_LEN)
     runner.capture([1, 2])
     feat = _feat(num_mel_bins, 5)
     pos = _pos()
     with torch.no_grad():
-        eager = encoder(feat, pos, None)
+        expected = torch.cat(
+            [encoder(chunk, pos, None) for chunk in feat.split(2)], dim=0
+        )
+
+        def unexpected_eager(*_args, **_kwargs):
+            raise AssertionError("oversized input must not fall back to eager")
+
+        runner._encoder = unexpected_eager
         out = runner.run(feat, pos, None)
-    assert torch.equal(eager, out)
+    assert torch.equal(expected, out)
 
 
 def test_vram_guard_skips_capture(encoder_bundle):

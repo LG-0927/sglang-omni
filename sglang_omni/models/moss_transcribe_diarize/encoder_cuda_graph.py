@@ -111,10 +111,22 @@ class WhisperEncoderCudaGraphRunner:
 
     @torch.no_grad()
     def run(self, input_features, encoder_position_ids, forward_batch):
-        """Replay the graph for [n, num_mel_bins, input_feature_len] features,
-        padding up to the nearest captured bucket. Falls back to eager if no
-        bucket fits or the input_feature_len differs from capture."""
+        """Replay captured graphs, microbatching above the largest bucket."""
         n = input_features.shape[0]
+        max_bucket = max(self._graphs, default=None)
+        if (
+            max_bucket is not None
+            and n > max_bucket
+            and input_features.shape[-1] == self._input_feature_len
+        ):
+            return torch.cat(
+                [
+                    self.run(chunk, encoder_position_ids, forward_batch)
+                    for chunk in input_features.split(max_bucket)
+                ],
+                dim=0,
+            )
+
         chunk_bucket = min((c for c in self._graphs if c >= n), default=None)
         if chunk_bucket is None or input_features.shape[-1] != self._input_feature_len:
             return self._encoder(input_features, encoder_position_ids, forward_batch)
