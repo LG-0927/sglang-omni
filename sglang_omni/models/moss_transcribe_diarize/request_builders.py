@@ -313,7 +313,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     audio_end_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_END))
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
-    audio_token = str(getattr(processor, "audio_token", _AUDIO_PAD))
+    audio_token = str(processor.audio_token)
     default_prompt = _render_prompt(processor, DEFAULT_TRANSCRIBE_DIARIZE_PROMPT)
     default_prompt_parts = _prompt_token_parts(
         default_prompt,
