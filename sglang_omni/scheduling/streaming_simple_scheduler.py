@@ -448,7 +448,10 @@ class StreamingSimpleScheduler:
             return
         for msg, result in zip(valid, results):
             if not self._is_aborted(msg.request_id):
-                self._emit_result(msg.request_id, result)
+                if isinstance(result, BaseException):
+                    self._emit_error(msg.request_id, result)
+                else:
+                    self._emit_result(msg.request_id, result)
                 self._record_completed_non_streaming_request_id(msg.request_id)
 
     def _run_compute(self, payload: Any, loop: asyncio.AbstractEventLoop) -> Any:
