@@ -291,14 +291,14 @@ def test_ready_steps_rotate_requests_and_batch_compatible_windows(done: bool) ->
             scheduler.handle_stream_done(request_id)
     assert not runner.batches
 
-    expected_batches = [["a", "b"], ["c"]] * (3 if done else 2)
+    expected_batches = [["a", "b"], ["c"], ["a", "b"]]
+    expected_batches += [["c", "a"], ["b", "c"]] if done else [["c"]]
     for expected in expected_batches:
         assert scheduler.has_ready_work()
         previous_calls = len(runner.batches)
         scheduler.run_ready_step()
         assert len(runner.batches) == previous_calls + 1
         assert [request_ids[id(state)] for state in runner.batches[-1]] == expected
-        assert len({state.decoder_steps for state in runner.batches[-1]}) == 1
     if done:
         scheduler.run_ready_step()
         messages = [

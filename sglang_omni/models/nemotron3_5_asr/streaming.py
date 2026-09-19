@@ -300,10 +300,7 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
                         if state.is_input_done:
                             self.finish_stream(state)
                         continue
-                    if (
-                        ready
-                        and state.model_chunk_index != ready[0][2].model_chunk_index
-                    ):
+                    if ready and (state.model_chunk_index == 0) != ready[0][2].is_first:
                         continue
                     ready.append(
                         (

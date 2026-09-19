@@ -16,6 +16,10 @@ import torch
 from transformers.cache_utils import DynamicCache
 from transformers.configuration_utils import PreTrainedConfig
 
+from sglang_omni.models.nemotron3_5_asr.attention_cache import (
+    NemotronBatchAttentionCache,
+)
+from sglang_omni.models.nemotron3_5_asr.encoder import get_mixed_progress_audio_features
 from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.proto import StagePayload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
@@ -157,10 +161,12 @@ class Nemotron3_5ASRModelRunner:
         caches: Sequence[DynamicCache | None],
         *,
         cache_config: PreTrainedConfig,
-    ) -> DynamicCache | None:
+    ) -> DynamicCache | NemotronBatchAttentionCache | None:
         if all(cache is None for cache in caches):
             return None
         assert all(cache is not None for cache in caches)
+        if len({cache.get_seq_length() for cache in caches}) > 1:
+            return NemotronBatchAttentionCache(caches)
         layer_count = len(caches[0].layers)
         assert all(len(cache.layers) == layer_count for cache in caches)
         merged_cache = DynamicCache(config=cache_config)
@@ -173,25 +179,21 @@ class Nemotron3_5ASRModelRunner:
             # Preserve layer metadata such as sliding-window state and cumulative
             # length.
             merged_layer = copy(layers[0])
-            merged_layer.keys = torch.cat(
-                [layer.keys for layer in layers], dim=0
-            )
-            merged_layer.values = torch.cat(
-                [layer.values for layer in layers], dim=0
-            )
+            merged_layer.keys = torch.cat([layer.keys for layer in layers], dim=0)
+            merged_layer.values = torch.cat([layer.values for layer in layers], dim=0)
             merged_cache.layers[layer_index] = merged_layer
         return merged_cache
 
     @staticmethod
     def split_attention_cache(
-        cache: DynamicCache,
+        cache: DynamicCache | NemotronBatchAttentionCache,
         batch_size: int,
         *,
         cache_config: PreTrainedConfig,
     ) -> list[DynamicCache]:
-        request_caches = [
-            DynamicCache(config=cache_config) for _ in range(batch_size)
-        ]
+        if isinstance(cache, NemotronBatchAttentionCache):
+            return cache.caches
+        request_caches = [DynamicCache(config=cache_config) for _ in range(batch_size)]
         assert all(
             len(request_cache.layers) == len(cache.layers)
             for request_cache in request_caches
@@ -199,9 +201,7 @@ class Nemotron3_5ASRModelRunner:
         for batch_index in range(batch_size):
             for layer_index, layer in enumerate(cache.layers):
                 request_layer = copy(layer)
-                request_layer.keys = layer.keys[
-                    batch_index : batch_index + 1
-                ].clone()
+                request_layer.keys = layer.keys[batch_index : batch_index + 1].clone()
                 request_layer.values = layer.values[
                     batch_index : batch_index + 1
                 ].clone()
@@ -306,15 +306,26 @@ class Nemotron3_5ASRModelRunner:
             torch.cuda.synchronize(self.device)
         started_at_s = time.perf_counter()
         with self.model_lock, torch.inference_mode():
-            encoder_outputs = self.model.get_audio_features(
-                input_features=input_features,
-                prompt_ids=prompt_ids,
-                past_key_values=attention_cache,
-                padding_cache=padding_cache,
-                num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
-                use_cache=True,
-                output_attention_mask=False,
-            )
+            if isinstance(attention_cache, NemotronBatchAttentionCache):
+                assert padding_cache is not None
+                encoder_outputs = get_mixed_progress_audio_features(
+                    self.model,
+                    input_features,
+                    prompt_ids,
+                    attention_cache=attention_cache,
+                    padding_cache=padding_cache,
+                    num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
+                )
+            else:
+                encoder_outputs = self.model.get_audio_features(
+                    input_features=input_features,
+                    prompt_ids=prompt_ids,
+                    past_key_values=attention_cache,
+                    padding_cache=padding_cache,
+                    num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
+                    use_cache=True,
+                    output_attention_mask=False,
+                )
             split_attention = self.split_attention_cache(
                 encoder_outputs.past_key_values,
                 len(states),

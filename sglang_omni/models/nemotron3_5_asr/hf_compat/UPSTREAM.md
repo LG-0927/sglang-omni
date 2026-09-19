@@ -38,3 +38,12 @@ Transformers hooks retain their original names, including generation hooks,
 Regenerate this directory from the pinned upstream commit and reapply those
 compatibility changes and scope reductions when updating it. Remove the
 backport once the repository dependency moves to Transformers 5.13 or newer.
+
+Mixed-progress batching is implemented outside this backport in
+[`../encoder.py`](../encoder.py) and [`../attention_cache.py`](../attention_cache.py).
+The runner calls the encoder adapter only for mixed-progress batches, reusing
+the loaded model's layers and projections without replacing its modules.
+When removing this backport, migrate the adapter's model and output-type imports
+along with the runner imports, and retain its per-request cache and mask logic.
+Verify that the replacement encoder exposes equivalent subsampling, relative
+position encoding, and layer cache behavior before switching model sources.

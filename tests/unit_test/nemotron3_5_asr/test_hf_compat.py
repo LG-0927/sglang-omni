@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from types import SimpleNamespace
 
@@ -51,8 +50,15 @@ def test_processor_text_decode_preserves_repeated_tokens() -> None:
         processor.decode(token_ids, durations=torch.ones(len(token_ids)))
 
 
+@pytest.mark.parametrize(
+    "prior_chunks,frames,lookahead",
+    [((0, 0), 8, 0), ((1, 3), 8, 0), ((3, 5), 8, 0), ((1, 3), 6, 3), ((3, 5), 6, 3)],
+)
 def test_local_model_preserves_streaming_results_and_caches_when_batched(
     tmp_path,
+    prior_chunks: tuple[int, int],
+    frames: int,
+    lookahead: int,
 ) -> None:
 
     config = Nemotron3_5AsrConfig(
@@ -102,23 +108,36 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
     runner.device = torch.device("cpu")
     runner.model_lock = threading.Lock()
     runner.processor = SimpleNamespace(
-        default_num_lookahead_tokens=0,
+        default_num_lookahead_tokens=lookahead,
         batch_decode=lambda rows, **kwargs: [str(row.tolist()) for row in rows],
     )
     serial = [runner.new_streaming_decode_state() for _ in range(2)]
     batched = [runner.new_streaming_decode_state() for _ in range(2)]
+    for index, count in enumerate(prior_chunks):
+        for chunk_index in range(count):
+            chunk = Nemotron3_5ASRPreparedChunk(
+                input_features=torch.full((1, frames, 4), float(index + chunk_index)),
+                prompt_ids=torch.tensor([index]),
+            )
+            for state in (serial[index], batched[index]):
+                runner.run_streaming_batch(
+                    [state], [chunk], requested_languages=["auto"]
+                )
     for chunk_index in range(2):
         chunks = [
             Nemotron3_5ASRPreparedChunk(
-                input_features=torch.full((1, 8, 4), float(index + chunk_index)),
+                input_features=torch.full((1, frames, 4), float(index + chunk_index)),
                 prompt_ids=torch.tensor([index]),
             )
             for index in range(2)
         ]
         for state, chunk in zip(serial, chunks):
             runner.run_streaming_batch([state], [chunk], requested_languages=["auto"])
+        order = [0, 1] if chunk_index == 0 else [1, 0]
         runner.run_streaming_batch(
-            batched, chunks, requested_languages=["auto", "auto"]
+            [batched[index] for index in order],
+            [chunks[index] for index in order],
+            requested_languages=["auto", "auto"],
         )
         for expected, actual in zip(serial, batched):
             assert actual.tokens == expected.tokens
@@ -129,7 +148,9 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
             for left, right in zip(
                 actual.attention_cache.layers, expected.attention_cache.layers
             ):
+                assert left.get_seq_length() == right.get_seq_length()
                 torch.testing.assert_close(left.keys, right.keys)
+                torch.testing.assert_close(left.values, right.values)
             for key in actual.padding_cache.layers:
                 torch.testing.assert_close(
                     actual.padding_cache.layers[key].cache,
@@ -142,7 +163,10 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
         for left, right in zip(
             batched[0].attention_cache.layers, batched[1].attention_cache.layers
         ):
-            assert left.keys.data_ptr() != right.keys.data_ptr()
+            assert (
+                left.keys.untyped_storage().data_ptr()
+                != right.keys.untyped_storage().data_ptr()
+            )
         for key in batched[0].padding_cache.layers:
             assert (
                 batched[0].padding_cache.layers[key].cache.data_ptr()
