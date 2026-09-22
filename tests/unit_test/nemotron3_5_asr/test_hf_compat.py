@@ -12,10 +12,13 @@ from tokenizers.models import WordLevel
 from transformers.cache_utils import DynamicCache
 from transformers.generation import GenerationMixin
 
+from sglang_omni.models.nemotron3_5_asr.cache import NemotronBatchAttentionCache
+from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
 from sglang_omni.models.nemotron3_5_asr.hf_compat import (
     Nemotron3_5AsrConfig,
     Nemotron3_5AsrForRNNT,
     Nemotron3_5AsrProcessor,
+    NemotronAsrStreamingEncoderModelOutput,
     NemotronAsrStreamingFeatureExtractor,
 )
 from sglang_omni.models.nemotron3_5_asr.hf_compat import (
@@ -31,6 +34,47 @@ from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
 )
+
+
+@torch.inference_mode()
+def run_reference_chunk(
+    runner: Nemotron3_5ASRModelRunner,
+    state: Nemotron3_5ASRDecodeState,
+    chunk: Nemotron3_5ASRPreparedChunk,
+) -> None:
+    encoder_output = runner.model.get_audio_features(
+        input_features=chunk.input_features,
+        prompt_ids=chunk.prompt_ids,
+        past_key_values=state.attention_cache,
+        padding_cache=state.padding_cache,
+        num_lookahead_tokens=runner.processor.default_num_lookahead_tokens,
+        use_cache=True,
+    )
+    state.attention_cache = encoder_output.past_key_values
+    state.padding_cache = encoder_output.padding_cache
+    state.encoder_frames += encoder_output.pooler_output.shape[1]
+    frame_index = 0
+    while frame_index < encoder_output.pooler_output.shape[1]:
+        output = runner.model(
+            encoder_outputs=NemotronAsrStreamingEncoderModelOutput(
+                pooler_output=encoder_output.pooler_output[
+                    :, frame_index : frame_index + 1
+                ]
+            ),
+            decoder_input_ids=torch.tensor([[state.tokens[-1]]], device=runner.device),
+            decoder_cache=state.decoder_cache,
+            use_decoder_cache=True,
+        )
+        state.decoder_cache = output.decoder_cache
+        token = output.logits[0, -1].argmax().item()
+        state.tokens.append(token)
+        state.decoder_steps += 1
+        is_blank = token == runner.model.config.blank_token_id
+        symbols = 0 if is_blank else state.symbols_at_frame + 1
+        advance = is_blank or symbols >= runner.model.max_symbols_per_step
+        state.symbols_at_frame = 0 if advance else symbols
+        state.durations.append(int(advance))
+        frame_index += int(advance)
 
 
 def test_processor_text_decode_preserves_repeated_tokens() -> None:
@@ -50,15 +94,27 @@ def test_processor_text_decode_preserves_repeated_tokens() -> None:
         processor.decode(token_ids, durations=torch.ones(len(token_ids)))
 
 
+@pytest.mark.parametrize("blank_only", [False, True])
 @pytest.mark.parametrize(
-    "prior_chunks,frames,lookahead",
-    [((0, 0), 8, 0), ((1, 3), 8, 0), ((3, 5), 8, 0), ((1, 3), 6, 3), ((3, 5), 6, 3)],
+    "prior_chunks,frames,lookahead,first_frames",
+    [
+        ((0, 0), 8, 0, 8),
+        ((1, 3), 8, 0, 8),
+        ((3, 5), 8, 0, 8),
+        ((1, 3), 6, 3, 6),
+        ((3, 5), 6, 3, 6),
+        ((0, 3), 8, 3, 7),
+        ((3, 0), 8, 3, 7),
+        ((0, 6), 2, 0, 1),
+    ],
 )
 def test_local_model_preserves_streaming_results_and_caches_when_batched(
     tmp_path,
     prior_chunks: tuple[int, int],
     frames: int,
     lookahead: int,
+    first_frames: int,
+    blank_only: bool,
 ) -> None:
 
     config = Nemotron3_5AsrConfig(
@@ -105,6 +161,11 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
 
     runner = object.__new__(Nemotron3_5ASRModelRunner)
     runner.model = loaded_model.eval()
+    if blank_only:
+        with torch.no_grad():
+            runner.model.joint.head.weight.zero_()
+            runner.model.joint.head.bias.fill_(-10)
+            runner.model.joint.head.bias[config.blank_token_id] = 10
     runner.device = torch.device("cpu")
     runner.model_lock = threading.Lock()
     runner.processor = SimpleNamespace(
@@ -116,23 +177,35 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
     for index, count in enumerate(prior_chunks):
         for chunk_index in range(count):
             chunk = Nemotron3_5ASRPreparedChunk(
-                input_features=torch.full((1, frames, 4), float(index + chunk_index)),
+                input_features=torch.full(
+                    (1, first_frames if chunk_index == 0 else frames, 4),
+                    float(index + chunk_index),
+                ),
                 prompt_ids=torch.tensor([index]),
             )
-            for state in (serial[index], batched[index]):
-                runner.run_streaming_batch(
-                    [state], [chunk], requested_languages=["auto"]
-                )
+            run_reference_chunk(runner, serial[index], chunk)
+            runner.run_streaming_batch(
+                [batched[index]], [chunk], requested_languages=["auto"]
+            )
     for chunk_index in range(2):
         chunks = [
             Nemotron3_5ASRPreparedChunk(
-                input_features=torch.full((1, frames, 4), float(index + chunk_index)),
+                input_features=torch.full(
+                    (
+                        1,
+                        first_frames
+                        if prior_chunks[index] == 0 and chunk_index == 0
+                        else frames,
+                        4,
+                    ),
+                    float(index + chunk_index),
+                ),
                 prompt_ids=torch.tensor([index]),
             )
             for index in range(2)
         ]
         for state, chunk in zip(serial, chunks):
-            runner.run_streaming_batch([state], [chunk], requested_languages=["auto"])
+            run_reference_chunk(runner, state, chunk)
         order = [0, 1] if chunk_index == 0 else [1, 0]
         runner.run_streaming_batch(
             [batched[index] for index in order],
@@ -142,8 +215,17 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
         for expected, actual in zip(serial, batched):
             assert actual.tokens == expected.tokens
             assert actual.durations == expected.durations
+            assert actual.decoder_steps == expected.decoder_steps
+            assert actual.encoder_frames == expected.encoder_frames
+            assert actual.symbols_at_frame == expected.symbols_at_frame
             torch.testing.assert_close(
                 actual.decoder_cache.cache, expected.decoder_cache.cache
+            )
+            torch.testing.assert_close(
+                actual.decoder_cache.hidden_state, expected.decoder_cache.hidden_state
+            )
+            torch.testing.assert_close(
+                actual.decoder_cache.cell_state, expected.decoder_cache.cell_state
             )
             for left, right in zip(
                 actual.attention_cache.layers, expected.attention_cache.layers
@@ -175,55 +257,53 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
 
 
 @pytest.mark.parametrize("batch_size", [1, 2])
-def test_attention_cache_split_merge_preserves_sliding_window_state(
-    batch_size: int,
-) -> None:
+def test_batched_attention_preserves_sliding_window_state(batch_size: int) -> None:
     config = NemotronAsrStreamingEncoderConfig(
         hidden_size=8,
         num_hidden_layers=1,
         num_attention_heads=2,
         intermediate_size=16,
-        sliding_window=5,
+        sliding_window=71,
     )
-    runner = object.__new__(Nemotron3_5ASRModelRunner)
-    request_caches = []
-    for request_index in range(batch_size):
-        cache = DynamicCache(config=config)
-        for update_index in range(3):
-            key_states = torch.full(
-                (1, 2, 2, 4),
-                float(request_index + update_index),
+    requests = [DynamicCache(config=config) for _ in range(batch_size)]
+    references = [DynamicCache(config=config) for _ in range(batch_size)]
+    for index, (actual, expected) in enumerate(zip(requests, references)):
+        for _ in range(index * 3):
+            keys = torch.full((1, 2, 4, 4), float(index))
+            actual.update(keys.clone(), keys.clone(), 0)
+            expected.update(keys.clone(), keys.clone(), 0)
+
+    for step in range(100):
+        order = list(range(batch_size))
+        if step % 2:
+            order.reverse()
+        keys = torch.stack(
+            [torch.full((2, 4, 4), float(1000 * index + step)) for index in order]
+        )
+        batch = NemotronBatchAttentionCache([requests[index] for index in order])
+        batched_keys, batched_values = batch.update(keys, -keys, 0)
+        for row, index in enumerate(order):
+            expected_keys, expected_values = references[index].update(
+                keys[row : row + 1].clone(), -keys[row : row + 1].clone(), 0
             )
-            cache.layers[0].update(key_states, key_states)
-        request_caches.append(cache)
-
-    merged = runner.merge_attention_caches(
-        request_caches,
-        cache_config=config,
-    )
-    assert merged is not None
-    merged_layer = merged.layers[0]
-    assert merged_layer.is_sliding
-    assert merged_layer.keys.shape[0] == batch_size
-    assert merged_layer.keys.shape[-2] == 4
-    assert merged_layer.get_seq_length() == 6
-
-    split = runner.split_attention_cache(
-        merged,
-        batch_size,
-        cache_config=config,
-    )
-    assert len(split) == batch_size
-    for request_cache in split:
-        request_layer = request_cache.layers[0]
-        assert request_layer.is_sliding
-        assert request_layer.keys.shape[-2] == 4
-        assert request_layer.get_seq_length() == 6
-
-        new_key_states = torch.zeros((1, 2, 2, 4))
-        request_layer.update(new_key_states, new_key_states)
-        assert request_layer.keys.shape[-2] == 4
-        assert request_layer.get_seq_length() == 8
+            length = expected_keys.shape[-2]
+            torch.testing.assert_close(
+                batched_keys[row : row + 1, :, -length:], expected_keys
+            )
+            torch.testing.assert_close(
+                batched_values[row : row + 1, :, -length:], expected_values
+            )
+            layer = requests[index].layers[0]
+            expected = references[index].layers[0]
+            assert layer.is_sliding
+            assert layer.get_seq_length() == (index * 3 + step + 1) * 4
+            assert layer.keys.shape[-2] <= config.sliding_window - 1
+            torch.testing.assert_close(layer.keys, expected.keys)
+            torch.testing.assert_close(layer.values, expected.values)
+        storage_pointers = {
+            cache.layers[0].keys.untyped_storage().data_ptr() for cache in requests
+        }
+        assert len(storage_pointers) == batch_size
 
 
 def test_parakeet_compat_forwards_cache_aware_encoder_kwargs(monkeypatch) -> None:

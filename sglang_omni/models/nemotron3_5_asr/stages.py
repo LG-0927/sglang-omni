@@ -5,15 +5,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sglang_omni.proto import StagePayload
-from sglang_omni.utils.device import resolve_device_spec
-
-from .model_runner import Nemotron3_5ASRModelRunner
-from .request_builders import (
+from sglang_omni.models.nemotron3_5_asr.model_runner import Nemotron3_5ASRModelRunner
+from sglang_omni.models.nemotron3_5_asr.request_builders import (
     Nemotron3_5ASRRequest,
     make_nemotron3_5_asr_request_builder,
 )
-from .streaming import Nemotron3_5ASRStreamingScheduler
+from sglang_omni.models.nemotron3_5_asr.streaming import Nemotron3_5ASRStreamingScheduler
+from sglang_omni.proto import StagePayload
+from sglang_omni.utils.device import resolve_device_spec
 
 
 def create_nemotron3_5_asr_executor(
@@ -45,10 +44,10 @@ def create_nemotron3_5_asr_executor(
         prompt_dictionary=runner.prompt_dictionary
     )
 
-    def _run_one(payload: StagePayload) -> StagePayload:
+    def run_one(payload: StagePayload) -> StagePayload:
         return runner.run_batch([build_request(payload)])[0]
 
-    def _run_batch(
+    def run_batch(
         payloads: Sequence[StagePayload],
     ) -> list[StagePayload | BaseException]:
         results: dict[int, StagePayload | BaseException] = {}
@@ -70,8 +69,8 @@ def create_nemotron3_5_asr_executor(
 
     return Nemotron3_5ASRStreamingScheduler(
         runner,
-        _run_one,
-        batch_compute_fn=_run_batch,
+        run_one,
+        batch_compute_fn=run_batch,
         prompt_dictionary=runner.prompt_dictionary,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,

@@ -7,55 +7,42 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Sequence
-from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
 from transformers.cache_utils import DynamicCache
-from transformers.configuration_utils import PreTrainedConfig
 
-from sglang_omni.models.nemotron3_5_asr.attention_cache import (
-    NemotronBatchAttentionCache,
+from sglang_omni.models.nemotron3_5_asr.decoder import (
+    Nemotron3_5ASRDecodeState,
+    decode_streaming_batch,
 )
-from sglang_omni.models.nemotron3_5_asr.encoder import get_mixed_progress_audio_features
-from sglang_omni.models.weight_loader import resolve_dtype
-from sglang_omni.proto import StagePayload
-from sglang_omni.utils.checkpoint import resolve_checkpoint
-
-from .hf_compat import (
+from sglang_omni.models.nemotron3_5_asr.encoder import encode_streaming_batch
+from sglang_omni.models.nemotron3_5_asr.hf_compat import (
     Nemotron3_5AsrConfig,
     Nemotron3_5AsrForRNNT,
     Nemotron3_5AsrProcessor,
     Nemotron3_5AsrRNNTDecoderCache,
-    NemotronAsrStreamingEncoderCausalConvPaddingCache,
-    NemotronAsrStreamingEncoderModelOutput,
 )
-from .request_builders import (
+from sglang_omni.models.nemotron3_5_asr.request_builders import (
     NEMOTRON_ASR_SAMPLE_RATE,
     Nemotron3_5ASRRequest,
     build_nemotron3_5_asr_result,
 )
-from .text import clean_nemotron_text, resolve_nemotron_locale
+from sglang_omni.models.nemotron3_5_asr.text import (
+    clean_nemotron_text,
+    resolve_nemotron_locale,
+)
+from sglang_omni.models.weight_loader import resolve_dtype
+from sglang_omni.proto import StagePayload
+from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 
 @dataclass(slots=True)
 class Nemotron3_5ASRPreparedChunk:
     input_features: torch.Tensor
     prompt_ids: torch.Tensor
-
-
-@dataclass(slots=True)
-class Nemotron3_5ASRDecodeState:
-    tokens: list[int]
-    durations: list[int]
-    symbols_at_frame: int = 0
-    encoder_frames: int = 0
-    decoder_steps: int = 0
-    attention_cache: DynamicCache | None = None
-    padding_cache: NemotronAsrStreamingEncoderCausalConvPaddingCache | None = None
-    decoder_cache: Nemotron3_5AsrRNNTDecoderCache | None = None
 
 
 @dataclass(slots=True)
@@ -123,7 +110,12 @@ class Nemotron3_5ASRModelRunner:
 
     def new_streaming_decode_state(self) -> Nemotron3_5ASRDecodeState:
         blank_token_id = int(self.model.config.blank_token_id)
-        return Nemotron3_5ASRDecodeState(tokens=[blank_token_id], durations=[0])
+        return Nemotron3_5ASRDecodeState(
+            tokens=[blank_token_id],
+            durations=[0],
+            attention_cache=DynamicCache(config=self.model.config.encoder_config),
+            decoder_cache=Nemotron3_5AsrRNNTDecoderCache(self.model.config),
+        )
 
     def prepare_streaming_chunk(
         self,
@@ -156,125 +148,6 @@ class Nemotron3_5ASRModelRunner:
             prompt_ids=processor_inputs.prompt_ids.to(device=self.device),
         )
 
-    @staticmethod
-    def merge_attention_caches(
-        caches: Sequence[DynamicCache | None],
-        *,
-        cache_config: PreTrainedConfig,
-    ) -> DynamicCache | NemotronBatchAttentionCache | None:
-        if all(cache is None for cache in caches):
-            return None
-        assert all(cache is not None for cache in caches)
-        if len({cache.get_seq_length() for cache in caches}) > 1:
-            return NemotronBatchAttentionCache(caches)
-        layer_count = len(caches[0].layers)
-        assert all(len(cache.layers) == layer_count for cache in caches)
-        merged_cache = DynamicCache(config=cache_config)
-        assert len(merged_cache.layers) == layer_count
-        for layer_index in range(layer_count):
-            layers = [cache.layers[layer_index] for cache in caches]
-            sequence_lengths = {layer.get_seq_length() for layer in layers}
-            assert len(sequence_lengths) == 1
-            assert all(type(layer) is type(layers[0]) for layer in layers)
-            # Preserve layer metadata such as sliding-window state and cumulative
-            # length.
-            merged_layer = copy(layers[0])
-            merged_layer.keys = torch.cat([layer.keys for layer in layers], dim=0)
-            merged_layer.values = torch.cat([layer.values for layer in layers], dim=0)
-            merged_cache.layers[layer_index] = merged_layer
-        return merged_cache
-
-    @staticmethod
-    def split_attention_cache(
-        cache: DynamicCache | NemotronBatchAttentionCache,
-        batch_size: int,
-        *,
-        cache_config: PreTrainedConfig,
-    ) -> list[DynamicCache]:
-        if isinstance(cache, NemotronBatchAttentionCache):
-            return cache.caches
-        request_caches = [DynamicCache(config=cache_config) for _ in range(batch_size)]
-        assert all(
-            len(request_cache.layers) == len(cache.layers)
-            for request_cache in request_caches
-        )
-        for batch_index in range(batch_size):
-            for layer_index, layer in enumerate(cache.layers):
-                request_layer = copy(layer)
-                request_layer.keys = layer.keys[batch_index : batch_index + 1].clone()
-                request_layer.values = layer.values[
-                    batch_index : batch_index + 1
-                ].clone()
-                request_caches[batch_index].layers[layer_index] = request_layer
-        return request_caches
-
-    @staticmethod
-    def merge_padding_caches(
-        caches: Sequence[NemotronAsrStreamingEncoderCausalConvPaddingCache | None],
-    ) -> NemotronAsrStreamingEncoderCausalConvPaddingCache | None:
-        if all(cache is None for cache in caches):
-            return None
-        assert all(cache is not None for cache in caches)
-        keys = list(caches[0].layers)
-        assert all(list(cache.layers) == keys for cache in caches)
-        merged = NemotronAsrStreamingEncoderCausalConvPaddingCache()
-        for key in keys:
-            source_layers = [cache.layers[key] for cache in caches]
-            layer = copy(source_layers[0])
-            layer.cache = torch.cat([source.cache for source in source_layers], dim=0)
-            merged.layers[key] = layer
-        return merged
-
-    @staticmethod
-    def split_padding_cache(
-        cache: NemotronAsrStreamingEncoderCausalConvPaddingCache, batch_size: int
-    ) -> list[NemotronAsrStreamingEncoderCausalConvPaddingCache]:
-        request_caches = [
-            NemotronAsrStreamingEncoderCausalConvPaddingCache()
-            for _ in range(batch_size)
-        ]
-        for key, source in cache.layers.items():
-            for batch_index, target in enumerate(request_caches):
-                layer = copy(source)
-                layer.cache = source.cache[batch_index : batch_index + 1].clone()
-                target.layers[key] = layer
-        return request_caches
-
-    def merge_decoder_caches(
-        self, caches: Sequence[Nemotron3_5AsrRNNTDecoderCache | None]
-    ) -> Nemotron3_5AsrRNNTDecoderCache:
-        is_initialized = [
-            cache is not None and cache.is_initialized for cache in caches
-        ]
-        merged = Nemotron3_5AsrRNNTDecoderCache(self.model.config)
-        if not any(is_initialized):
-            return merged
-        assert all(is_initialized)
-        merged.cache = torch.cat([cache.cache for cache in caches], dim=0)
-        merged.hidden_state = torch.cat([cache.hidden_state for cache in caches], dim=1)
-        merged.cell_state = torch.cat([cache.cell_state for cache in caches], dim=1)
-        merged.is_initialized = True
-        return merged
-
-    def split_decoder_cache(
-        self, cache: Nemotron3_5AsrRNNTDecoderCache, batch_size: int
-    ) -> list[Nemotron3_5AsrRNNTDecoderCache]:
-        request_caches = [
-            Nemotron3_5AsrRNNTDecoderCache(self.model.config) for _ in range(batch_size)
-        ]
-        if not cache.is_initialized:
-            return request_caches
-        for batch_index, request_cache in enumerate(request_caches):
-            request_cache.cache = cache.cache[batch_index : batch_index + 1].clone()
-            request_cache.hidden_state = cache.hidden_state[
-                :, batch_index : batch_index + 1
-            ].clone()
-            request_cache.cell_state = cache.cell_state[
-                :, batch_index : batch_index + 1
-            ].clone()
-            request_cache.is_initialized = True
-        return request_caches
-
     def run_streaming_batch(
         self,
         states: Sequence[Nemotron3_5ASRDecodeState],
@@ -293,144 +166,37 @@ class Nemotron3_5ASRModelRunner:
             for state, limit in zip(states, token_limits)
         )
 
-        input_features = torch.cat([chunk.input_features for chunk in chunks], dim=0)
-        prompt_ids = torch.cat([chunk.prompt_ids.reshape(-1) for chunk in chunks])
-        attention_cache = self.merge_attention_caches(
-            [state.attention_cache for state in states],
-            cache_config=self.model.config.encoder_config,
-        )
-        padding_cache = self.merge_padding_caches(
-            [state.padding_cache for state in states]
-        )
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-        started_at_s = time.perf_counter()
         with self.model_lock, torch.inference_mode():
-            if isinstance(attention_cache, NemotronBatchAttentionCache):
-                assert padding_cache is not None
-                encoder_outputs = get_mixed_progress_audio_features(
-                    self.model,
-                    input_features,
-                    prompt_ids,
-                    attention_cache=attention_cache,
-                    padding_cache=padding_cache,
-                    num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
-                )
-            else:
-                encoder_outputs = self.model.get_audio_features(
-                    input_features=input_features,
-                    prompt_ids=prompt_ids,
-                    past_key_values=attention_cache,
-                    padding_cache=padding_cache,
-                    num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
-                    use_cache=True,
-                    output_attention_mask=False,
-                )
-            split_attention = self.split_attention_cache(
-                encoder_outputs.past_key_values,
-                len(states),
-                cache_config=self.model.config.encoder_config,
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            started_at_s = time.perf_counter()
+            encoded_frames = encode_streaming_batch(
+                self.model,
+                [chunk.input_features for chunk in chunks],
+                torch.cat([chunk.prompt_ids.reshape(-1) for chunk in chunks]),
+                attention_caches=[state.attention_cache for state in states],
+                padding_caches=[state.padding_cache for state in states],
+                num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
             )
-            split_padding = self.split_padding_cache(
-                encoder_outputs.padding_cache, len(states)
-            )
-            for state, cache in zip(states, split_attention):
-                state.attention_cache = cache
-            for state, cache in zip(states, split_padding):
-                state.padding_cache = cache
-
-            encoded_frame_chunks = [
-                encoder_outputs.pooler_output[index : index + 1]
-                for index in range(len(states))
-            ]
-            local_frame_indices = [0] * len(states)
-            for state, encoded_frames in zip(states, encoded_frame_chunks):
-                state.encoder_frames += int(encoded_frames.shape[1])
-
-            active_indices = list(range(len(states)))
-            while active_indices:
-                current_frames = torch.cat(
-                    [
-                        encoded_frame_chunks[index][
-                            :,
-                            local_frame_indices[index] : local_frame_indices[index] + 1,
-                        ]
-                        for index in active_indices
-                    ],
-                    dim=0,
-                )
-                decoder_input_ids = torch.tensor(
-                    [[states[index].tokens[-1]] for index in active_indices],
-                    dtype=torch.long,
-                    device=self.device,
-                )
-                decoder_cache = self.merge_decoder_caches(
-                    [states[index].decoder_cache for index in active_indices]
-                )
-                decoder_outputs = self.model(
-                    encoder_outputs=NemotronAsrStreamingEncoderModelOutput(
-                        pooler_output=current_frames
-                    ),
-                    decoder_input_ids=decoder_input_ids,
-                    decoder_cache=decoder_cache,
-                    use_decoder_cache=True,
-                )
-                # Note (Li Gang): blank decisions advance each request's frame independently.
-                predicted_token_ids = (
-                    decoder_outputs.logits[:, -1, :].argmax(dim=-1).tolist()
-                )
-                split_decoder = self.split_decoder_cache(
-                    decoder_outputs.decoder_cache, len(active_indices)
-                )
-                next_active_indices: list[int] = []
-                for row, state_index in enumerate(active_indices):
-                    state = states[state_index]
-                    state.decoder_cache = split_decoder[row]
-                    token_id = int(predicted_token_ids[row])
-                    state.tokens.append(token_id)
-                    is_blank = token_id == int(self.model.config.blank_token_id)
-                    symbols_at_frame = 0 if is_blank else state.symbols_at_frame + 1
-                    should_advance_frame = is_blank or symbols_at_frame >= int(
-                        self.model.max_symbols_per_step
-                    )
-                    state.symbols_at_frame = (
-                        0 if should_advance_frame else symbols_at_frame
-                    )
-                    frame_advance = int(should_advance_frame)
-                    state.durations.append(frame_advance)
-                    state.decoder_steps += 1
-                    local_frame_indices[state_index] += frame_advance
-                    token_limit = token_limits[state_index]
-                    if (
-                        local_frame_indices[state_index]
-                        >= encoded_frame_chunks[state_index].shape[1]
-                    ):
-                        continue
-                    if token_limit is not None and state.decoder_steps >= token_limit:
-                        continue
-                    next_active_indices.append(state_index)
-                active_indices = next_active_indices
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-        elapsed_s = time.perf_counter() - started_at_s
+            decode_streaming_batch(self.model, states, encoded_frames, token_limits)
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            elapsed_s = time.perf_counter() - started_at_s
 
         token_tensors = [
             torch.tensor(state.tokens, dtype=torch.long) for state in states
         ]
-        raw_texts = [
-            self.processor.batch_decode(tokens[None], skip_special_tokens=False)[0]
-            for tokens in token_tensors
-        ]
-        clean_texts = [clean_nemotron_text(text) for text in raw_texts]
-        languages = [
-            resolve_nemotron_locale(raw_text, requested)
-            for raw_text, requested in zip(raw_texts, requested_languages)
-        ]
+        raw_texts = self.processor.batch_decode(
+            token_tensors, skip_special_tokens=False
+        )
         return Nemotron3_5ASRStreamingBatchResult(
             elapsed_s=elapsed_s,
             raw_texts=raw_texts,
-            clean_texts=clean_texts,
-            languages=languages,
+            clean_texts=[clean_nemotron_text(text) for text in raw_texts],
+            languages=[
+                resolve_nemotron_locale(raw_text, requested)
+                for raw_text, requested in zip(raw_texts, requested_languages)
+            ],
         )
 
     def generate_compatible_batch(
@@ -515,7 +281,6 @@ class Nemotron3_5ASRModelRunner:
 
 
 __all__ = [
-    "Nemotron3_5ASRDecodeState",
     "Nemotron3_5ASRModelRunner",
     "Nemotron3_5ASRPreparedChunk",
     "Nemotron3_5ASRStreamingBatchResult",

@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Batch attention over request-owned caches with different streaming progress."""
+"""Batch encoder operations without replacing request-owned caches."""
 
 from collections.abc import Sequence
 
 import torch
 from torch.nn import functional as F
 from transformers.cache_utils import DynamicCache
+
+from sglang_omni.models.nemotron3_5_asr.hf_compat import (
+    NemotronAsrStreamingEncoderCausalConvPaddingCache,
+)
 
 
 class NemotronBatchAttentionCache:
@@ -15,12 +19,17 @@ class NemotronBatchAttentionCache:
     def update(
         self, keys: torch.Tensor, values: torch.Tensor, layer_idx: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        # note (Li Gang): Request caches must not retain another row's storage.
         updated = [
-            cache.update(keys[index : index + 1], values[index : index + 1], layer_idx)
+            cache.update(
+                keys[index : index + 1].clone(),
+                values[index : index + 1].clone(),
+                layer_idx,
+            )
             for index, cache in enumerate(self.caches)
         ]
         max_length = max(key.shape[-2] for key, _ in updated)
-        # note (Li Gang): Left padding aligns each request's current queries and relative distances.
+        # note (Li Gang): Left padding aligns queries and relative positions.
         return (
             torch.cat(
                 [
@@ -62,3 +71,24 @@ class NemotronBatchAttentionCache:
         )
         visible = (columns[None, :] >= left_padding[:, None])[:, None, :]
         return (visible & (chunk_diff >= 0) & (chunk_diff <= left_chunks))[:, None]
+
+
+class NemotronBatchPaddingCache:
+    def __init__(
+        self, caches: Sequence[NemotronAsrStreamingEncoderCausalConvPaddingCache]
+    ) -> None:
+        self.caches = list(caches)
+
+    def update(
+        self,
+        hidden_states: torch.Tensor,
+        cache_key: str,
+        conv_module: torch.nn.Conv1d | torch.nn.Conv2d,
+    ) -> torch.Tensor:
+        return torch.cat(
+            [
+                cache.update(hidden_states[index : index + 1], cache_key, conv_module)
+                for index, cache in enumerate(self.caches)
+            ],
+            dim=0,
+        )

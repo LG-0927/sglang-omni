@@ -1,36 +1,56 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Run mixed-progress streaming batches through the model's encoder layers."""
+"""Encode streaming windows at any request progress in one batch."""
+
+from collections import defaultdict
+from collections.abc import Sequence
 
 import torch
 from torch.nn import functional as F
+from transformers.cache_utils import DynamicCache
 
-from sglang_omni.models.nemotron3_5_asr.attention_cache import (
+from sglang_omni.models.nemotron3_5_asr.cache import (
     NemotronBatchAttentionCache,
+    NemotronBatchPaddingCache,
 )
-from sglang_omni.models.nemotron3_5_asr.hf_compat.modeling_nemotron3_5_asr import (
+from sglang_omni.models.nemotron3_5_asr.hf_compat import (
     Nemotron3_5AsrForRNNT,
-)
-from sglang_omni.models.nemotron3_5_asr.hf_compat.modeling_nemotron_asr_streaming import (
     NemotronAsrStreamingEncoderCausalConvPaddingCache,
-    NemotronAsrStreamingEncoderModelOutput,
 )
 
 
-def get_mixed_progress_audio_features(
+def encode_streaming_batch(
     model: Nemotron3_5AsrForRNNT,
-    input_features: torch.Tensor,
+    input_features: Sequence[torch.Tensor],
     prompt_ids: torch.Tensor,
     *,
-    attention_cache: NemotronBatchAttentionCache,
-    padding_cache: NemotronAsrStreamingEncoderCausalConvPaddingCache,
+    attention_caches: Sequence[DynamicCache],
+    padding_caches: Sequence[NemotronAsrStreamingEncoderCausalConvPaddingCache],
     num_lookahead_tokens: int,
-) -> NemotronAsrStreamingEncoderModelOutput:
-    encoder = model.encoder
+) -> torch.Tensor:
     assert not model.training
-    hidden_states = encoder.subsampling(
-        input_features, attention_mask=None, padding_cache=padding_cache
+    encoder = model.encoder
+    groups: dict[int, list[int]] = defaultdict(list)
+    for index, features in enumerate(input_features):
+        groups[features.shape[1]].append(index)
+
+    # note (Li Gang): Both mel lengths produce equally long encoder windows.
+    subsampled: dict[int, torch.Tensor] = {}
+    for indices in groups.values():
+        features = torch.cat([input_features[index] for index in indices], dim=0)
+        padding_cache = NemotronBatchPaddingCache(
+            [padding_caches[index] for index in indices]
+        )
+        hidden_states = encoder.subsampling(
+            features, attention_mask=None, padding_cache=padding_cache
+        )
+        subsampled.update(zip(indices, hidden_states.split(1), strict=True))
+    hidden_states = torch.cat(
+        [subsampled[index] for index in range(len(input_features))], dim=0
     )
     hidden_states *= encoder.input_scale
+
+    attention_cache = NemotronBatchAttentionCache(attention_caches)
+    padding_cache = NemotronBatchPaddingCache(padding_caches)
     seq_length = hidden_states.shape[1]
     attention_mask = attention_cache.create_mask(
         seq_length,
@@ -53,15 +73,9 @@ def get_mixed_progress_audio_features(
             use_cache=True,
         )
 
-    prompt_ids = prompt_ids.to(hidden_states.device)
-    one_hot = F.one_hot(prompt_ids, num_classes=model.config.num_prompts).to(
-        hidden_states.dtype
-    )
+    one_hot = F.one_hot(
+        prompt_ids.to(hidden_states.device), num_classes=model.config.num_prompts
+    ).to(hidden_states.dtype)
     one_hot = one_hot[:, None, :].expand(-1, hidden_states.shape[1], -1)
     fused = model.prompt_projector(torch.cat([hidden_states, one_hot], dim=-1))
-    return NemotronAsrStreamingEncoderModelOutput(
-        last_hidden_state=hidden_states,
-        pooler_output=model.encoder_projector(fused),
-        past_key_values=attention_cache,
-        padding_cache=padding_cache,
-    )
+    return model.encoder_projector(fused)

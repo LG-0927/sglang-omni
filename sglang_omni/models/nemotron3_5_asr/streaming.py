@@ -11,21 +11,21 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
-from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
-
-from .model_runner import (
-    Nemotron3_5ASRDecodeState,
+from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
+from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
+    Nemotron3_5ASRPreparedChunk,
     Nemotron3_5ASRStreamingBatchResult,
 )
-from .request_builders import (
+from sglang_omni.models.nemotron3_5_asr.request_builders import (
     build_nemotron3_5_asr_result,
     normalize_nemotron_language,
     validate_nemotron_greedy_params,
 )
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 
 PCM16_BYTES_PER_SAMPLE = 2
 PCM16_AMPLITUDE_SCALE = 32768.0
@@ -133,21 +133,17 @@ class Nemotron3_5ASRStreamState:
         start = self.next_mel_frame * self.spec.hop_length - self.spec.n_fft // 2
         return start, start + self.spec.subsequent_samples
 
-    def has_ready_window(self, *, finalizing: bool = False) -> bool:
-        if self.model_chunk_index == 0:
-            return self.total_samples >= self.spec.first_samples or (
-                finalizing and self.total_samples > 0
-            )
+    def has_ready_window(self) -> bool:
+        if self.has_reached_decode_limit:
+            return False
         _, end = self.next_window_bounds()
-        if self.total_samples >= end:
-            return True
-        return finalizing and self.total_samples > self.covered_audio_end
+        return self.total_samples >= end or (
+            self.is_input_done and self.total_samples > self.covered_audio_end
+        )
 
-    def pop_ready_window(
-        self, *, finalizing: bool = False
-    ) -> Nemotron3_5ASRAudioWindow:
-        assert self.has_ready_window(
-            finalizing=finalizing
+    def pop_ready_window(self) -> Nemotron3_5ASRAudioWindow:
+        assert (
+            self.has_ready_window()
         ), f"Nemotron stream {self.request_id!r} has no ready window"
         start, end = self.next_window_bounds()
         window_samples = end - start
@@ -185,6 +181,7 @@ class Nemotron3_5ASRStreamState:
 class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
     """Serialize request-owned RNNT state with abort cleanup through state_lock."""
 
+    # note (Li Gang): The next cache-aware ASR consumer should generalize PCM state.
     supports_external_input_stream = True
     can_batch_stream_chunks = True
     stream_chunk_batch_distinct_requests = True
@@ -243,122 +240,74 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
     def on_stream_chunk(
         self, request_id: str, item: StreamItem
     ) -> list[OutgoingMessage]:
-        raise RuntimeError(
-            "Nemotron streaming chunks must use the cross-request batch path"
-        )
-
-    def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
-        failed: list[str] = []
-        with self.state_lock:
-            for request_id, item in items:
-                if self.is_aborted(request_id):
-                    continue
-                try:
-                    state = self.stream_states[request_id]
-                    metadata = item.metadata or {}
-                    if not isinstance(metadata, dict):
-                        raise TypeError(
-                            "Nemotron streaming chunk metadata must be a dict"
-                        )
-                    if not isinstance(item.data, torch.Tensor):
-                        raise TypeError(
-                            "Nemotron streaming chunks must carry torch.Tensor"
-                        )
-                    state.append_pcm16(item.data, metadata)
-                except Exception as exc:
-                    self.emit_error(request_id, exc)
-                    self.abort_state(request_id)
-                    self.aborted_streams += 1
-                    failed.append(request_id)
-        for request_id in dict.fromkeys(failed):
-            self.cleanup_aborted_request(request_id)
+        metadata = item.metadata if item.metadata is not None else {}
+        if not isinstance(metadata, dict):
+            raise TypeError("Nemotron streaming chunk metadata must be a dict")
+        if not isinstance(item.data, torch.Tensor):
+            raise TypeError("Nemotron streaming chunks must carry torch.Tensor")
+        self.stream_states[request_id].append_pcm16(item.data, metadata)
+        return []
 
     def has_ready_work(self) -> bool:
         with self.state_lock:
             return any(
                 not self.is_aborted(request_id)
-                and (
-                    state.is_input_done
-                    or (not state.has_reached_decode_limit and state.has_ready_window())
-                )
+                and (state.is_input_done or state.has_ready_window())
                 for request_id, state in self.stream_states.items()
             )
 
     def run_ready_step(self) -> None:
         failed: list[str] = []
         with self.state_lock:
-            ready: list[
-                tuple[str, Nemotron3_5ASRStreamState, Nemotron3_5ASRAudioWindow]
-            ] = []
+            ready: list[Nemotron3_5ASRStreamState] = []
+            chunks: list[Nemotron3_5ASRPreparedChunk] = []
             for request_id, state in list(self.stream_states.items()):
                 if self.is_aborted(request_id):
                     continue
                 try:
-                    if state.has_reached_decode_limit or not state.has_ready_window(
-                        finalizing=state.is_input_done
-                    ):
+                    if not state.has_ready_window():
                         if state.is_input_done:
                             self.finish_stream(state)
                         continue
-                    if ready and (state.model_chunk_index == 0) != ready[0][2].is_first:
-                        continue
-                    ready.append(
-                        (
-                            request_id,
-                            state,
-                            state.pop_ready_window(finalizing=state.is_input_done),
+                    window = state.pop_ready_window()
+                    chunks.append(
+                        self.runner.prepare_streaming_chunk(
+                            window.waveform,
+                            language=state.language,
+                            is_first=window.is_first,
                         )
                     )
-                    # Rotate selected requests behind those still waiting for a step.
+                    ready.append(state)
+                    # note (Li Gang): Rotation lets waiting requests go next.
                     self.stream_states.move_to_end(request_id)
                     if len(ready) == self.max_batch_size:
                         break
                 except Exception as exc:
                     self.emit_error(request_id, exc)
                     self.abort_state(request_id)
-                    self.aborted_streams += 1
                     failed.append(request_id)
-            failed.extend(self.run_ready_windows(ready))
-        for request_id in dict.fromkeys(failed):
+            if ready:
+                try:
+                    batch_result = self.runner.run_streaming_batch(
+                        [state.decode for state in ready],
+                        chunks,
+                        requested_languages=[state.language for state in ready],
+                        max_new_tokens=[state.max_new_tokens for state in ready],
+                    )
+                    for index, state in enumerate(ready):
+                        state.model_compute_s += batch_result.elapsed_s / len(ready)
+                        message = self.partial_message(state, batch_result, index)
+                        if message is not None and not self.is_aborted(
+                            state.request_id
+                        ):
+                            self.outbox.put(message)
+                except Exception as exc:
+                    for state in ready:
+                        self.emit_error(state.request_id, exc)
+                        self.abort_state(state.request_id)
+                        failed.append(state.request_id)
+        for request_id in failed:
             self.cleanup_aborted_request(request_id)
-
-    def run_ready_windows(
-        self,
-        ready: Sequence[
-            tuple[str, Nemotron3_5ASRStreamState, Nemotron3_5ASRAudioWindow]
-        ],
-    ) -> list[str]:
-        if not ready:
-            return []
-        failed: list[str] = []
-        try:
-            prepared_chunks = [
-                self.runner.prepare_streaming_chunk(
-                    window.waveform,
-                    language=state.language,
-                    is_first=window.is_first,
-                )
-                for _, state, window in ready
-            ]
-            batch_result = self.runner.run_streaming_batch(
-                [state.decode for _, state, _ in ready],
-                prepared_chunks,
-                requested_languages=[state.language for _, state, _ in ready],
-                max_new_tokens=[state.max_new_tokens for _, state, _ in ready],
-            )
-            for index, (request_id, state, _) in enumerate(ready):
-                state.model_compute_s += batch_result.elapsed_s / len(ready)
-                message = self.partial_message(state, batch_result, index)
-                if message is None or self.is_aborted(request_id):
-                    continue
-                self.outbox.put(message)
-        except Exception as exc:
-            for request_id, _, _ in ready:
-                self.emit_error(request_id, exc)
-                self.abort_state(request_id)
-                self.aborted_streams += 1
-                failed.append(request_id)
-        return failed
 
     def partial_message(
         self,
@@ -424,7 +373,9 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
         self.completed_streams += 1
 
     def clear_stream_state(self, request_id: str) -> None:
-        self.stream_states.pop(request_id, None)
+        state = self.stream_states.pop(request_id, None)
+        if state is not None and self.is_aborted(request_id):
+            self.aborted_streams += 1
 
     def stats(self) -> dict[str, int]:
         with self.state_lock:

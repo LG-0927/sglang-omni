@@ -9,10 +9,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from sglang_omni.models.nemotron3_5_asr.text import (
+    clean_nemotron_text,
+    resolve_nemotron_locale,
+)
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
-
-from .text import clean_nemotron_text, resolve_nemotron_locale
 
 NEMOTRON_ASR_SAMPLE_RATE = 16000
 
@@ -88,7 +90,7 @@ def make_nemotron3_5_asr_request_builder(
     if not prompt_dictionary:
         raise ValueError("Nemotron processor prompt_dictionary must not be empty")
 
-    def _request_builder(payload: StagePayload) -> Nemotron3_5ASRRequest:
+    def request_builder(payload: StagePayload) -> Nemotron3_5ASRRequest:
         started_at_s = time.perf_counter()
         params = payload.request.params or {}
         max_new_tokens = validate_nemotron_greedy_params(params)
@@ -109,7 +111,7 @@ def make_nemotron3_5_asr_request_builder(
             stage_payload=payload,
         )
 
-    return _request_builder
+    return request_builder
 
 
 def build_nemotron3_5_asr_result(

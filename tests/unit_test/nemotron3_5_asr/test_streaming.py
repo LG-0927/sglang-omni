@@ -9,9 +9,14 @@ from threading import Thread
 import numpy as np
 import pytest
 import torch
+from transformers.cache_utils import DynamicCache
 
+from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
+from sglang_omni.models.nemotron3_5_asr.hf_compat import (
+    Nemotron3_5AsrConfig,
+    Nemotron3_5AsrRNNTDecoderCache,
+)
 from sglang_omni.models.nemotron3_5_asr.model_runner import (
-    Nemotron3_5ASRDecodeState,
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
     Nemotron3_5ASRStreamingBatchResult,
@@ -35,6 +40,15 @@ LOOKAHEAD_3 = Nemotron3_5ASRStreamingChunkSpec(
     n_fft=512,
     streaming_latency_ms=80,
 )
+
+
+def make_decode_state() -> Nemotron3_5ASRDecodeState:
+    return Nemotron3_5ASRDecodeState(
+        tokens=[99],
+        durations=[0],
+        attention_cache=DynamicCache(),
+        decoder_cache=Nemotron3_5AsrRNNTDecoderCache(Nemotron3_5AsrConfig()),
+    )
 
 
 def make_payload(request_id: str, *, language: str = "en-US") -> StagePayload:
@@ -70,7 +84,7 @@ class FakeRunner(Nemotron3_5ASRModelRunner):
         return asdict(LOOKAHEAD_3)
 
     def new_streaming_decode_state(self) -> Nemotron3_5ASRDecodeState:
-        return Nemotron3_5ASRDecodeState(tokens=[99], durations=[0])
+        return make_decode_state()
 
     def prepare_streaming_chunk(
         self, waveform: np.ndarray, *, language: str, is_first: bool
@@ -130,7 +144,7 @@ def test_pcm16_fragmentation_and_final_padding_geometry() -> None:
         payload=make_payload("r"),
         language="en-US",
         spec=LOOKAHEAD_3,
-        decode=Nemotron3_5ASRDecodeState(tokens=[99], durations=[0]),
+        decode=make_decode_state(),
     )
     waveform = np.arange(5000, dtype=np.int16)
     raw_bytes = waveform.astype("<i2", copy=False).view(np.uint8)
@@ -145,7 +159,7 @@ def test_pcm16_fragmentation_and_final_padding_geometry() -> None:
     np.testing.assert_array_equal(first.waveform, waveform[:4040] / 32768.0)
 
     state.mark_done()
-    final = state.pop_ready_window(finalizing=True)
+    final = state.pop_ready_window()
     np.testing.assert_array_equal(
         final.waveform, np.pad(waveform[3744:] / 32768.0, (0, 4264))
     )
@@ -168,12 +182,12 @@ def test_lookahead_zero_preserves_negative_stft_start() -> None:
         payload=make_payload("r"),
         language="en-US",
         spec=spec,
-        decode=Nemotron3_5ASRDecodeState(tokens=[99], durations=[0]),
+        decode=make_decode_state(),
     )
     state.append_pcm16(torch.arange(300, dtype=torch.int16), {"sample_rate": 16000})
     state.pop_ready_window()
     state.mark_done()
-    final = state.pop_ready_window(finalizing=True)
+    final = state.pop_ready_window()
     np.testing.assert_array_equal(
         final.waveform, np.pad(np.arange(300) / 32768.0, (96, 1284))
     )
@@ -271,7 +285,9 @@ def test_scheduler_drains_buffered_windows_without_new_input() -> None:
 
 
 @pytest.mark.parametrize("done", [False, True])
-def test_ready_steps_rotate_requests_and_batch_compatible_windows(done: bool) -> None:
+def test_ready_steps_rotate_requests_and_batch_first_with_later_windows(
+    done: bool,
+) -> None:
     runner = FakeRunner()
     scheduler = make_scheduler(runner, max_batch_size=2)
     for request_id in ("a", "b", "c"):
@@ -291,8 +307,9 @@ def test_ready_steps_rotate_requests_and_batch_compatible_windows(done: bool) ->
             scheduler.handle_stream_done(request_id)
     assert not runner.batches
 
-    expected_batches = [["a", "b"], ["c"], ["a", "b"]]
-    expected_batches += [["c", "a"], ["b", "c"]] if done else [["c"]]
+    expected_batches = [["a", "b"], ["c", "a"], ["b", "c"]]
+    if done:
+        expected_batches += [["a", "b"], ["c"]]
     for expected in expected_batches:
         assert scheduler.has_ready_work()
         previous_calls = len(runner.batches)
@@ -354,11 +371,11 @@ def test_ready_step_model_failure_cleans_request_and_allows_next_request(
         [make_pcm_item(r, np.arange(4040, dtype=np.int16)) for r in ("a", "b")]
     )
 
-    def _fail(*args, **kwargs):
+    def fail(*args, **kwargs):
         raise RuntimeError("model failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(runner, "run_streaming_batch", _fail)
+        patch.setattr(runner, "run_streaming_batch", fail)
         scheduler.run_ready_step()
     error = scheduler.outbox.get_nowait()
     assert (error.request_id, error.type) == ("a", "error")
@@ -379,7 +396,7 @@ def test_stream_done_rejects_incomplete_pcm16_sample() -> None:
         payload=make_payload("r"),
         language="en-US",
         spec=LOOKAHEAD_3,
-        decode=Nemotron3_5ASRDecodeState(tokens=[99], durations=[0]),
+        decode=make_decode_state(),
     )
     state.append_pcm16(torch.tensor([1, 2, 3], dtype=torch.uint8), {})
 
