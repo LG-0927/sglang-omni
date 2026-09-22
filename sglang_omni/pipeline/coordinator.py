@@ -47,7 +47,7 @@ DEFAULT_MAX_EXTERNAL_INPUT_BYTES = 64 * 1024 * 1024
 
 
 @dataclass
-class _AdminPendingOperation:
+class AdminPendingOperation:
     expected_stages: set[str]
     action: str
     results: dict[str, AdminResult] = field(default_factory=dict)
@@ -151,7 +151,7 @@ class Coordinator:
         # local admission closed and lets the broadcast survive caller cancellation.
         self._abort_tasks: dict[str, asyncio.Task[bool]] = {}
         self.external_input_streams: dict[str, ExternalInputStream] = {}
-        self._admin_ops: dict[str, _AdminPendingOperation] = {}
+        self._admin_ops: dict[str, AdminPendingOperation] = {}
         self._admin_lock = asyncio.Lock()
 
         # State
@@ -209,7 +209,7 @@ class Coordinator:
             return
         info.state = RequestState.FAILED
         info.error = message
-        self._reject_completion_future(request_id, RuntimeError(message))
+        self.reject_completion_future(request_id, RuntimeError(message))
         queue = self._stream_queues.get(request_id)
         if queue is not None:
             await queue.put(
@@ -248,13 +248,13 @@ class Coordinator:
         if not self._running:
             raise RuntimeError("Coordinator is not running")
 
-        target_stages = self._resolve_admin_stages(stages)
+        target_stages = self.resolve_admin_stages(stages)
         if not target_stages:
             raise ValueError("No stages registered for admin operation")
 
         op_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
-        pending = _AdminPendingOperation(
+        pending = AdminPendingOperation(
             expected_stages=set(target_stages),
             action=action,
             future=loop.create_future(),
@@ -283,7 +283,7 @@ class Coordinator:
             finally:
                 self._admin_ops.pop(op_id, None)
 
-        return self._aggregate_admin_results(
+        return self.aggregate_admin_results(
             op_id=op_id,
             action=action,
             results=list(results.values()),
@@ -401,7 +401,7 @@ class Coordinator:
 
     async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
         """Submit a request to the pipeline and wait for completion."""
-        await self._submit_request(request_id, request)
+        await self.submit_request(request_id, request)
 
         future = self._completion_futures[request_id]
         try:
@@ -417,13 +417,13 @@ class Coordinator:
     ) -> AsyncGenerator[CompleteMessage | StreamMessage, None]:
         """Submit a request and return its output-event iterator."""
         stream_queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
-        await self._submit_request(
+        await self.submit_request(
             request_id,
             request,
             stream_queue=stream_queue,
             external_input_stream=True,
         )
-        expected = self._expected_terminal_stages(request_id)
+        expected = self.expected_terminal_stages(request_id)
         return self.stream_events(request_id, stream_queue, expected)
 
     async def send_input_chunk(
@@ -530,8 +530,8 @@ class Coordinator:
         """Submit a request and yield stream events until completion."""
         queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
 
-        await self._submit_request(request_id, request, stream_queue=queue)
-        expected = self._expected_terminal_stages(request_id)
+        await self.submit_request(request_id, request, stream_queue=queue)
+        expected = self.expected_terminal_stages(request_id)
         events = self.stream_events(request_id, queue, expected)
         async with aclosing(events):
             async for msg in events:
@@ -575,7 +575,7 @@ class Coordinator:
                         self._completion_futures.pop(request_id, None)
                         self.external_input_streams.pop(request_id, None)
 
-    async def _submit_request(
+    async def submit_request(
         self,
         request_id: str,
         request: OmniRequest | Any,
@@ -588,7 +588,7 @@ class Coordinator:
             raise RuntimeError(self._fatal_error)
         if external_input_stream:
             self.ensure_external_input_writes_open()
-        if self._request_id_is_reserved(request_id):
+        if self.request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
 
         if self.max_in_flight is not None and len(self._requests) >= self.max_in_flight:
@@ -621,7 +621,7 @@ class Coordinator:
             request_id=request_id,
             state=RequestState.PENDING,
             current_stage=self.entry_stage,
-            terminal_stages=self._resolve_terminal_stages(request),
+            terminal_stages=self.resolve_terminal_stages(request),
         )
 
         # Create future for completion
@@ -684,7 +684,7 @@ class Coordinator:
             replica_bindings,
         )
 
-    def _request_id_is_reserved(self, request_id: str) -> bool:
+    def request_id_is_reserved(self, request_id: str) -> bool:
         """Return whether any coordinator owner still holds this request ID."""
         return (
             request_id in self._requests
@@ -694,7 +694,7 @@ class Coordinator:
             or request_id in self.external_input_streams
         )
 
-    def _reject_completion_future(
+    def reject_completion_future(
         self,
         request_id: str,
         exc: BaseException,
@@ -736,16 +736,16 @@ class Coordinator:
             return False
 
         abort_task = asyncio.create_task(
-            self._run_abort(request_id),
+            self.run_abort(request_id),
             name=f"coordinator-abort-{request_id}",
         )
         self._abort_tasks[request_id] = abort_task
         abort_task.add_done_callback(
-            lambda done, rid=request_id: self._on_abort_task_done(rid, done)
+            lambda done, rid=request_id: self.on_abort_task_done(rid, done)
         )
         return await asyncio.shield(abort_task)
 
-    async def _run_abort(
+    async def run_abort(
         self,
         request_id: str,
     ) -> bool:
@@ -763,7 +763,7 @@ class Coordinator:
             return False
 
         info.state = RequestState.ABORTED
-        self._reject_completion_future(
+        self.reject_completion_future(
             request_id, asyncio.CancelledError(f"Request {request_id} aborted")
         )
         stream_queue = self._stream_queues.get(request_id)
@@ -792,7 +792,7 @@ class Coordinator:
         self.external_input_streams.pop(request_id, None)
         return aborted
 
-    def _on_abort_task_done(
+    def on_abort_task_done(
         self,
         request_id: str,
         task: asyncio.Task[bool],
@@ -819,18 +819,18 @@ class Coordinator:
             while self._running:
                 msg = await self.control_plane.recv_event()
                 if isinstance(msg, StreamMessage):
-                    await self._handle_stream(msg)
+                    await self.handle_stream(msg)
                 elif isinstance(msg, AdminResultMessage):
-                    self._handle_admin_result(msg.result)
+                    self.handle_admin_result(msg.result)
                 else:
-                    await self._handle_completion(msg)
+                    await self.handle_completion(msg)
         except asyncio.CancelledError:
             logger.info("Coordinator completion loop cancelled")
         except Exception as e:
             logger.error("Coordinator completion loop error: %s", e)
             raise
 
-    async def _handle_completion(self, msg: CompleteMessage) -> None:
+    async def handle_completion(self, msg: CompleteMessage) -> None:
         """Serialize terminal state with external input writes for this request."""
         stream = self.external_input_streams.get(msg.request_id)
         if stream is None:
@@ -882,7 +882,7 @@ class Coordinator:
                 AbortMessage(request_id=request_id)
             )
             self._partial_results.pop(request_id, None)
-            self._reject_completion_future(
+            self.reject_completion_future(
                 request_id, QueueFullError.from_message(msg.error)
             )
             stream_queue = self._stream_queues.get(request_id)
@@ -892,7 +892,7 @@ class Coordinator:
             self.external_input_streams.pop(request_id, None)
             return
 
-        expected_terminal_stages = self._expected_terminal_stages(request_id)
+        expected_terminal_stages = self.expected_terminal_stages(request_id)
         if expected_terminal_stages and from_stage not in expected_terminal_stages:
             logger.debug(
                 "Coordinator ignoring completion from inactive terminal: "
@@ -941,7 +941,7 @@ class Coordinator:
         self._requests.pop(request_id, None)
         self.external_input_streams.pop(request_id, None)
 
-    async def _handle_stream(self, msg: StreamMessage) -> None:
+    async def handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
         request_id = msg.request_id
         if request_id not in self._stream_queues:
@@ -979,7 +979,7 @@ class Coordinator:
             msg = replace(msg, from_stage=logical, stage_name=stage_name)
         await self._stream_queues[request_id].put(msg)
 
-    def _handle_admin_result(self, result: AdminResult) -> None:
+    def handle_admin_result(self, result: AdminResult) -> None:
         pending = self._admin_ops.get(result.op_id)
         if pending is None:
             logger.warning(
@@ -996,7 +996,7 @@ class Coordinator:
             if not pending.future.done():
                 pending.future.set_result(dict(pending.results))
 
-    def _resolve_admin_stages(self, stages: Sequence[str] | None) -> list[str]:
+    def resolve_admin_stages(self, stages: Sequence[str] | None) -> list[str]:
         if stages is None:
             return sorted(self._stages)
         # Note (wenyao): dedup preserving order so a caller passing both a
@@ -1011,7 +1011,7 @@ class Coordinator:
             raise ValueError(f"Unknown admin target stage(s): {unknown}")
         return resolved
 
-    def _aggregate_admin_results(
+    def aggregate_admin_results(
         self,
         *,
         op_id: str,
@@ -1050,7 +1050,7 @@ class Coordinator:
         """Get info about a request."""
         return self._requests.get(request_id)
 
-    def _resolve_terminal_stages(self, request: OmniRequest) -> set[str]:
+    def resolve_terminal_stages(self, request: OmniRequest) -> set[str]:
         if self._terminal_stages_resolver is None:
             return set(self._terminal_stages)
         resolved = self._terminal_stages_resolver(request)
@@ -1077,7 +1077,7 @@ class Coordinator:
             )
         return resolved_stages
 
-    def _expected_terminal_stages(self, request_id: str) -> set[str]:
+    def expected_terminal_stages(self, request_id: str) -> set[str]:
         info = self._requests.get(request_id)
         if info is None or info.terminal_stages is None:
             return set(self._terminal_stages)
