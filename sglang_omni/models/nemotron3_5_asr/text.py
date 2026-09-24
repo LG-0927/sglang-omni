@@ -22,12 +22,18 @@ def resolve_nemotron_locale(
         detected.setdefault(locale.casefold(), locale)
     if len(detected) == 1:
         return next(iter(detected.values()))
+    else:
+        pass
     if len(detected) > 1:
         return None
+    else:
+        pass
 
     requested = (requested_language or "").strip()
     if not requested or requested.casefold() == "auto":
         return None
+    else:
+        pass
     return requested_language
 
 

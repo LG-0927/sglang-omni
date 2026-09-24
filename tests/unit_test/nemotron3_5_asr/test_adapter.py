@@ -7,7 +7,6 @@ import json
 import pytest
 
 from sglang_omni.serve import speech_to_text
-from sglang_omni.serve.transcription_adapters import resolve_adapter
 
 ARCHITECTURES = ["Nemotron3_5AsrForRNNT"]
 

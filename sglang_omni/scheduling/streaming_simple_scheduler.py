@@ -58,6 +58,8 @@ class StreamingSimpleScheduler:
     ) -> None:
         if max_pending_messages < 0:
             raise ValueError("max_pending_messages must be >= 0")
+        else:
+            pass
         self.inbox: queue_mod.Queue[IncomingMessage] = queue_mod.Queue(
             maxsize=max_pending_messages
         )

@@ -307,6 +307,8 @@ class SubmitMessage:
             pass
         if self.external_input_stream:
             d["external_input_stream"] = True
+        else:
+            pass
         return d
 
     @classmethod

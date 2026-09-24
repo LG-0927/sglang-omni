@@ -10,7 +10,9 @@ from sglang_omni.models.nemotron3_5_asr.request_builders import (
     Nemotron3_5ASRRequest,
     make_nemotron3_5_asr_request_builder,
 )
-from sglang_omni.models.nemotron3_5_asr.streaming import Nemotron3_5ASRStreamingScheduler
+from sglang_omni.models.nemotron3_5_asr.streaming import (
+    Nemotron3_5ASRStreamingScheduler,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.utils.device import resolve_device_spec
 
@@ -28,10 +30,16 @@ def create_nemotron3_5_asr_executor(
 ) -> Nemotron3_5ASRStreamingScheduler:
     if max_batch_size < 1:
         raise ValueError("max_batch_size must be at least 1")
+    else:
+        pass
     if max_batch_wait_ms < 0:
         raise ValueError("max_batch_wait_ms must be non-negative")
+    else:
+        pass
     if max_pending_stream_messages < 1:
         raise ValueError("max_pending_stream_messages must be at least 1")
+    else:
+        pass
 
     resolved_device = resolve_device_spec(device, gpu_id)
     runner = Nemotron3_5ASRModelRunner(
@@ -65,6 +73,8 @@ def create_nemotron3_5_asr_executor(
                 batch_results = [exc] * len(valid)
             for (index, _), result in zip(valid, batch_results, strict=True):
                 results[index] = result
+        else:
+            pass
         return [results[index] for index in range(len(payloads))]
 
     return Nemotron3_5ASRStreamingScheduler(

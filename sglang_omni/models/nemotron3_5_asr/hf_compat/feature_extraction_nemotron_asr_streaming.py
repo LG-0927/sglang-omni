@@ -29,6 +29,8 @@ from transformers.utils.import_utils import requires
 
 if is_librosa_available():
     import librosa
+else:
+    pass
 
 
 logger = logging.get_logger(__name__)
@@ -195,6 +197,8 @@ class NemotronAsrStreamingFeatureExtractor(SequenceFeatureExtractor):
                     f" sampling rate of {self.sampling_rate}. Please make sure that the provided `raw_speech` input"
                     f" was sampled with {self.sampling_rate} and not {sampling_rate}."
                 )
+            else:
+                pass
         else:
             logger.warning(
                 f"It is strongly recommended to pass the `sampling_rate` argument to `{self.__class__.__name__}()`. "
@@ -208,6 +212,8 @@ class NemotronAsrStreamingFeatureExtractor(SequenceFeatureExtractor):
             raw_speech[0], np.ndarray
         ):
             raw_speech = [torch.tensor(speech) for speech in raw_speech]
+        else:
+            pass
 
         is_batched_torch = (
             isinstance(raw_speech, torch.Tensor) and len(raw_speech.shape) > 1
@@ -218,6 +224,8 @@ class NemotronAsrStreamingFeatureExtractor(SequenceFeatureExtractor):
                 "We will take the mean of the channels to convert to mono."
             )
             raw_speech = raw_speech.mean(-1)
+        else:
+            pass
 
         is_batched_sequence = isinstance(raw_speech, (list, tuple))
         if is_batched_sequence:
@@ -228,6 +236,10 @@ class NemotronAsrStreamingFeatureExtractor(SequenceFeatureExtractor):
                         "We will take the mean of the channels to convert to mono."
                     )
                     speech = speech.mean(-1)
+                else:
+                    pass
+        else:
+            pass
 
         if is_batched_torch or is_batched_sequence:
             raw_speech = [speech[:, None].to(torch.float32) for speech in raw_speech]
@@ -262,6 +274,8 @@ class NemotronAsrStreamingFeatureExtractor(SequenceFeatureExtractor):
                 dim=1,
             )
             input_features = input_features.masked_fill(~timemask, 0.0)
+        else:
+            pass
 
         input_features = self.torch_extract_fbank_features(
             input_features, device, center=center

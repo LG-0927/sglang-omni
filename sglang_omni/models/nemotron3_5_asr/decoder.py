@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: N801  # Keep the Nemotron 3.5 API spelling.
 """Request-owned RNN-T state and batched greedy streaming decode."""
 
 from collections.abc import Sequence
@@ -61,6 +62,8 @@ def decode_streaming_batch(
             for row, cache in enumerate(caches):
                 if not cache.is_initialized:
                     cache.lazy_initialization(embeddings[row : row + 1])
+                else:
+                    pass
             hidden = torch.cat([cache.hidden_state for cache in caches], dim=1)
             cell = torch.cat([cache.cell_state for cache in caches], dim=1)
             output, (hidden, cell) = decoder.lstm(embeddings, (hidden, cell))
@@ -71,6 +74,8 @@ def decode_streaming_batch(
                     hidden[:, row : row + 1],
                     cell[:, row : row + 1],
                 )
+        else:
+            pass
 
         predictions = torch.cat(
             [states[index].decoder_cache.cache for index in active_indices], dim=0
@@ -99,9 +104,13 @@ def decode_streaming_batch(
             if advance:
                 state.symbols_at_frame = 0
                 frame_indices[index] += 1
+            else:
+                pass
             limit = token_limits[index]
             if frame_indices[index] < frame_count and (
                 limit is None or state.decoder_steps < limit
             ):
                 next_active.append(index)
+            else:
+                pass
         active_indices = next_active

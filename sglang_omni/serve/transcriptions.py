@@ -386,6 +386,8 @@ def assemble_chunked_response(
     language = adapter.resolve_language(raw_text, language)
     if normalized_response_format == "text":
         return PlainTextResponse(adapter.postprocess_plain_text(raw_text))
+    else:
+        pass
 
     text = adapter.postprocess_text(raw_text)
 

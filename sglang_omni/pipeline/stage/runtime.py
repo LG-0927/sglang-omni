@@ -515,13 +515,21 @@ class Stage:
             if validation_error is not None:
                 await self.send_failure(request_id, validation_error)
                 return
+            else:
+                pass
+        else:
+            pass
         self.record_replica_bindings(request_id, msg.replica_bindings)
         self.active_requests.add(request_id)
         if msg.external_input_stream:
             if self.stream_queue is None:
                 self.stream_queue = StreamQueue()
+            else:
+                pass
             self.external_input_next_chunk_ids[request_id] = 0
             self.external_input_done.discard(request_id)
+        else:
+            pass
         if self.stream_queue is not None and not self.stream_queue.has(request_id):
             self.stream_queue.open(request_id)
         else:
@@ -536,13 +544,15 @@ class Stage:
         payload = msg.data  # StagePayload from coordinator
         if msg.external_input_stream and isinstance(payload, StagePayload):
             payload.external_input_stream = True
+        else:
+            pass
         try:
-            await self.execute(
-                payload, external_input_stream=msg.external_input_stream
-            )
+            await self.execute(payload, external_input_stream=msg.external_input_stream)
         except Exception as exc:
             if not msg.external_input_stream:
                 raise
+            else:
+                pass
             await self.fail_external_input_stream(
                 request_id, f"failed to start: {error_text(exc)}"
             )
@@ -553,10 +563,16 @@ class Stage:
                 f"Stage {self.name} external input streams currently require "
                 f"tp_size=1; got tp_size={self.comm.tp_size}"
             )
+        else:
+            pass
         if not self.scheduler.supports_external_input_stream:
             return f"Stage {self.name} does not support external input streams"
+        else:
+            pass
         if self.scheduler.inbox.maxsize <= 0:
             return f"Stage {self.name} external input stream inbox must be bounded"
+        else:
+            pass
         return None
 
     async def on_data_ready(
@@ -878,6 +894,8 @@ class Stage:
             pass
         if not await self.accept_external_input_chunk(request_id, item):
             return
+        else:
+            pass
         if self.open_pre_payload_stream_if_allowed(request_id):
             if item.from_stage == "coordinator":
                 await self.enqueue_external_input_message(
@@ -909,23 +927,31 @@ class Stage:
     ) -> bool:
         if item.from_stage != "coordinator":
             return True
+        else:
+            pass
         expected = self.external_input_next_chunk_ids.get(request_id)
         if expected is None:
             await self.fail_external_input_stream(
                 request_id, "received a chunk before external input stream start"
             )
             return False
+        else:
+            pass
         if request_id in self.external_input_done:
             await self.fail_external_input_stream(
                 request_id, "received a chunk after external input stream done"
             )
             return False
+        else:
+            pass
         if item.chunk_id != expected:
             await self.fail_external_input_stream(
                 request_id,
                 f"expected chunk_id={expected}, got chunk_id={item.chunk_id}",
             )
             return False
+        else:
+            pass
         self.external_input_next_chunk_ids[request_id] = expected + 1
         return True
 
@@ -934,16 +960,22 @@ class Stage:
     ) -> bool:
         if self.logical_source(from_stage) != "coordinator":
             return True
+        else:
+            pass
         if request_id not in self.external_input_next_chunk_ids:
             await self.fail_external_input_stream(
                 request_id, "received done before external input stream start"
             )
             return False
+        else:
+            pass
         if request_id in self.external_input_done:
             await self.fail_external_input_stream(
                 request_id, "received duplicate external input stream done"
             )
             return False
+        else:
+            pass
         self.external_input_done.add(request_id)
         return True
 
@@ -980,7 +1012,11 @@ class Stage:
                             f"timed out waiting for the bounded scheduler inbox "
                             f"to accept {message.type}",
                         )
+                    else:
+                        pass
                     return False
+                else:
+                    pass
                 await asyncio.sleep(min(EXTERNAL_INPUT_ENQUEUE_RETRY_S, remaining))
         return False
 
@@ -1154,6 +1190,8 @@ class Stage:
         if is_done:
             if not await self.accept_external_input_done(request_id, from_stage):
                 return
+            else:
+                pass
             if not self.open_pre_payload_stream_if_allowed(request_id):
                 with suppress(Exception):
                     self.scheduler.abort(request_id)
@@ -1229,6 +1267,8 @@ class Stage:
         if external_input_stream:
             await self.enqueue_external_input_message(request_id, msg)
             return
+        else:
+            pass
         enqueue = getattr(self.scheduler, "enqueue", None)
         if enqueue is not None:
             enqueue(msg)

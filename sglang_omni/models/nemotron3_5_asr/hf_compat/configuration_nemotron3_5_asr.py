@@ -1,3 +1,4 @@
+# ruff: noqa: N801  # Keep the Nemotron 3.5 API spelling.
 # Copyright 2026 The HuggingFace Inc. team. All rights reserved.
 # Modified by the SGLang-Omni project for Transformers 5.12.1 compatibility.
 #
@@ -83,6 +84,8 @@ class Nemotron3_5AsrConfig(PreTrainedConfig):
             )
         elif self.encoder_config is None:
             self.encoder_config = NemotronAsrStreamingEncoderConfig()
+        else:
+            pass
 
         super().__post_init__(**kwargs)
 

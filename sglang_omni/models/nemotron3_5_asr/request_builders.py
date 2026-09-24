@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: N801  # Keep the Nemotron 3.5 API spelling.
 """Request preparation for Nemotron 3.5 ASR."""
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ def normalize_nemotron_language(
             f"Unknown language={language!r}. Supported values: "
             f"{sorted(prompt_dictionary)}"
         )
+    else:
+        pass
     return resolved
 
 
@@ -60,24 +63,34 @@ def validate_nemotron_greedy_params(params: Mapping[str, object]) -> int | None:
             "Nemotron 3.5 ASR supports greedy RNN-T decoding only; "
             "temperature must be 0"
         )
+    else:
+        pass
 
     prompt = params.get("prompt")
     if prompt is not None and (not isinstance(prompt, str) or prompt.strip()):
         raise ValueError("Nemotron 3.5 ASR does not support a text prompt")
+    else:
+        pass
 
     task = str(params.get("task") or "transcribe").strip().lower()
     if task != "transcribe":
         raise ValueError("Nemotron 3.5 ASR supports transcription only")
+    else:
+        pass
 
     raw_max_new_tokens = params.get("max_new_tokens")
     if raw_max_new_tokens is None:
         return None
+    else:
+        pass
     if (
         isinstance(raw_max_new_tokens, bool)
         or not isinstance(raw_max_new_tokens, int)
         or raw_max_new_tokens < 1
     ):
         raise ValueError("max_new_tokens must be a positive integer")
+    else:
+        pass
     return raw_max_new_tokens
 
 
@@ -89,6 +102,8 @@ def make_nemotron3_5_asr_request_builder(
     prompt_dictionary = dict(prompt_dictionary)
     if not prompt_dictionary:
         raise ValueError("Nemotron processor prompt_dictionary must not be empty")
+    else:
+        pass
 
     def request_builder(payload: StagePayload) -> Nemotron3_5ASRRequest:
         started_at_s = time.perf_counter()
@@ -139,6 +154,8 @@ def build_nemotron3_5_asr_result(
     }
     if extra_data:
         data.update(extra_data)
+    else:
+        pass
 
     return StagePayload(
         request_id=payload.request_id,

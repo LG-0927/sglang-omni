@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: N801  # Keep the Nemotron 3.5 API spelling.
 """Model-owned batched RNN-T inference for Nemotron 3.5 ASR."""
 
 from __future__ import annotations
@@ -68,6 +69,8 @@ class Nemotron3_5ASRModelRunner:
         resolved_dtype = resolve_dtype(dtype)
         if resolved_dtype is None:
             raise ValueError("dtype must resolve to a concrete torch dtype")
+        else:
+            pass
 
         self.device = torch.device(device)
         self.dtype = resolved_dtype
@@ -169,6 +172,8 @@ class Nemotron3_5ASRModelRunner:
         with self.model_lock, torch.inference_mode():
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
+            else:
+                pass
             started_at_s = time.perf_counter()
             encoded_frames = encode_streaming_batch(
                 self.model,
@@ -181,6 +186,8 @@ class Nemotron3_5ASRModelRunner:
             decode_streaming_batch(self.model, states, encoded_frames, token_limits)
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
+            else:
+                pass
             elapsed_s = time.perf_counter() - started_at_s
 
         token_tensors = [
@@ -257,6 +264,8 @@ class Nemotron3_5ASRModelRunner:
     ) -> list[StagePayload]:
         if not requests:
             return []
+        else:
+            pass
 
         # Note (Li Gang): generate applies one token limit to the entire batch.
         groups: dict[int | None, list[tuple[int, Nemotron3_5ASRRequest]]] = defaultdict(

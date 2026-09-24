@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: N801  # Keep the Nemotron 3.5 API spelling.
 """Native cache-aware PCM streaming scheduler for Nemotron 3.5 ASR."""
 
 from __future__ import annotations
@@ -75,33 +76,49 @@ class Nemotron3_5ASRStreamState:
     ) -> None:
         if tensor.device.type != "cpu":
             raise ValueError("Nemotron streaming chunks must be CPU PCM16 tensors")
+        else:
+            pass
         if tensor.dtype not in {torch.int16, torch.uint8}:
             raise TypeError(
                 "Nemotron streaming chunks must use PCM16 samples (torch.int16) "
                 f"or raw little-endian bytes (torch.uint8), got {tensor.dtype}"
             )
+        else:
+            pass
         if tensor.ndim not in {1, 2}:
             raise ValueError(
                 "Nemotron streaming PCM16 tensors must be one-dimensional or mono"
             )
+        else:
+            pass
         if tensor.ndim == 2 and 1 not in tensor.shape:
             raise ValueError("Nemotron streaming accepts mono PCM16 only")
+        else:
+            pass
         sample_rate = metadata.get("sample_rate", self.spec.sample_rate)
         if isinstance(sample_rate, bool) or sample_rate != self.spec.sample_rate:
             raise ValueError(
                 f"Nemotron streaming requires sample_rate={self.spec.sample_rate}"
             )
+        else:
+            pass
         modality = metadata.get("modality")
         if modality not in {None, "audio", "pcm16"}:
             raise ValueError(
                 f"Nemotron streaming chunk modality must be audio or pcm16, got {modality!r}"
             )
+        else:
+            pass
         if self.is_input_done:
             raise RuntimeError(f"Nemotron stream {self.request_id!r} is already done")
+        else:
+            pass
 
         pcm_samples = tensor.detach().contiguous().reshape(-1)
         if pcm_samples.numel() == 0:
             raise ValueError("Nemotron streaming PCM16 chunks must not be empty")
+        else:
+            pass
         if pcm_samples.dtype == torch.int16:
             packet_bytes = pcm_samples.numpy().astype("<i2", copy=False).tobytes()
         else:
@@ -119,23 +136,33 @@ class Nemotron3_5ASRStreamState:
     def mark_done(self) -> None:
         if self.is_input_done:
             raise RuntimeError(f"Nemotron stream {self.request_id!r} is already done")
+        else:
+            pass
         if self.total_samples == 0:
             raise ValueError("Nemotron streaming input contains no PCM16 samples")
+        else:
+            pass
         if len(self.pcm_bytes) % PCM16_BYTES_PER_SAMPLE:
             raise ValueError(
                 "Nemotron streaming input ends with an incomplete PCM16 sample"
             )
+        else:
+            pass
         self.is_input_done = True
 
     def next_window_bounds(self) -> tuple[int, int]:
         if self.model_chunk_index == 0:
             return 0, self.spec.first_samples
+        else:
+            pass
         start = self.next_mel_frame * self.spec.hop_length - self.spec.n_fft // 2
         return start, start + self.spec.subsequent_samples
 
     def has_ready_window(self) -> bool:
         if self.has_reached_decode_limit:
             return False
+        else:
+            pass
         _, end = self.next_window_bounds()
         return self.total_samples >= end or (
             self.is_input_done and self.total_samples > self.covered_audio_end
@@ -223,6 +250,8 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
         if request_id in self.stream_states:
             raise ValueError(f"Nemotron stream {request_id!r} already exists")
+        else:
+            pass
         params = payload.request.params or {}
         max_new_tokens = validate_nemotron_greedy_params(params)
         language = normalize_nemotron_language(
@@ -243,8 +272,12 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
         metadata = item.metadata if item.metadata is not None else {}
         if not isinstance(metadata, dict):
             raise TypeError("Nemotron streaming chunk metadata must be a dict")
+        else:
+            pass
         if not isinstance(item.data, torch.Tensor):
             raise TypeError("Nemotron streaming chunks must carry torch.Tensor")
+        else:
+            pass
         self.stream_states[request_id].append_pcm16(item.data, metadata)
         return []
 
@@ -264,11 +297,17 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
             for request_id, state in list(self.stream_states.items()):
                 if self.is_aborted(request_id):
                     continue
+                else:
+                    pass
                 try:
                     if not state.has_ready_window():
                         if state.is_input_done:
                             self.finish_stream(state)
+                        else:
+                            pass
                         continue
+                    else:
+                        pass
                     window = state.pop_ready_window()
                     chunks.append(
                         self.runner.prepare_streaming_chunk(
@@ -282,6 +321,8 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
                     self.stream_states.move_to_end(request_id)
                     if len(ready) == self.max_batch_size:
                         break
+                    else:
+                        pass
                 except Exception as exc:
                     self.emit_error(request_id, exc)
                     self.abort_state(request_id)
@@ -301,11 +342,15 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
                             state.request_id
                         ):
                             self.outbox.put(message)
+                        else:
+                            pass
                 except Exception as exc:
                     for state in ready:
                         self.emit_error(state.request_id, exc)
                         self.abort_state(state.request_id)
                         failed.append(state.request_id)
+            else:
+                pass
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
 
@@ -321,10 +366,14 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
         state.detected_language = batch_result.languages[index]
         if not state.clean_text or state.clean_text == previous_text:
             return None
+        else:
+            pass
         if previous_text and not state.clean_text.startswith(previous_text):
             raise RuntimeError(
                 "Nemotron streaming transcript changed a previously emitted prefix"
             )
+        else:
+            pass
         text_delta = state.clean_text[len(previous_text) :]
         return OutgoingMessage(
             request_id=state.request_id,
@@ -376,6 +425,8 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
         state = self.stream_states.pop(request_id, None)
         if state is not None and self.is_aborted(request_id):
             self.aborted_streams += 1
+        else:
+            pass
 
     def stats(self) -> dict[str, int]:
         with self.state_lock:
@@ -399,6 +450,8 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
         super().stop()
         if was_running:
             return
+        else:
+            pass
         with self.state_lock:
             self.stream_states.clear()
         self.close_runner()
@@ -406,6 +459,8 @@ class Nemotron3_5ASRStreamingScheduler(StreamingSimpleScheduler):
     def close_runner(self) -> None:
         if self.is_closed:
             return
+        else:
+            pass
         self.is_closed = True
         self.runner.close()
 

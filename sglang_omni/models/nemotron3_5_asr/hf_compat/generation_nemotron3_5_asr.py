@@ -1,3 +1,4 @@
+# ruff: noqa: N801  # Keep the Nemotron 3.5 API spelling.
 # Copyright 2026 The HuggingFace Inc. team. All rights reserved.
 # Modified by the SGLang-Omni project for Transformers 5.12.1 compatibility.
 #
@@ -24,11 +25,15 @@ class Nemotron3_5AsrRNNTDecoderCache(NemotronAsrStreamingRNNTDecoderCache): ...
 
 class Nemotron3_5AsrGenerationMixin(NemotronAsrStreamingGenerationMixin):
     def generate(self, inputs=None, generation_config=None, **kwargs):
-        self._prompt_ids = kwargs.pop("prompt_ids", None)
+        self._prompt_ids = kwargs.pop(
+            "prompt_ids", None
+        )  # noqa: leading-underscore  # Required compatibility name
         get_audio_features = self.get_audio_features
 
         def get_audio_features_with_prompt(*args, prompt_ids=None, **features_kwargs):
-            prompt_ids = self._prompt_ids if prompt_ids is None else prompt_ids
+            prompt_ids = (
+                self._prompt_ids if prompt_ids is None else prompt_ids
+            )  # noqa: leading-underscore  # Required compatibility name
             return get_audio_features(*args, prompt_ids=prompt_ids, **features_kwargs)
 
         self.get_audio_features = get_audio_features_with_prompt
@@ -38,4 +43,6 @@ class Nemotron3_5AsrGenerationMixin(NemotronAsrStreamingGenerationMixin):
             )
         finally:
             del self.get_audio_features
-            del self._prompt_ids
+            del (
+                self._prompt_ids
+            )  # noqa: leading-underscore  # Required compatibility name

@@ -193,9 +193,11 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
                 input_features=torch.full(
                     (
                         1,
-                        first_frames
-                        if prior_chunks[index] == 0 and chunk_index == 0
-                        else frames,
+                        (
+                            first_frames
+                            if prior_chunks[index] == 0 and chunk_index == 0
+                            else frames
+                        ),
                         4,
                     ),
                     float(index + chunk_index),

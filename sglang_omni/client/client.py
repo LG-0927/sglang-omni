@@ -36,6 +36,8 @@ from sglang_omni.proto import CompleteMessage, OmniRequest, RequestState, Stream
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 class ExternalInputStream:
@@ -59,6 +61,8 @@ class ExternalInputStream:
     async def __anext__(self) -> GenerateChunk:
         if self.is_closed:
             raise StopAsyncIteration
+        else:
+            pass
         try:
             msg = await anext(self.events)
         except StopAsyncIteration:
@@ -66,6 +70,8 @@ class ExternalInputStream:
             raise
         if isinstance(msg, StreamMessage):
             return self.client.stream_builder(self.request_id, msg)
+        else:
+            pass
         return self.client.result_builder(self.request_id, msg.result)
 
     async def send(
@@ -73,8 +79,12 @@ class ExternalInputStream:
     ) -> int:
         if self.is_input_done:
             raise RuntimeError(f"Input stream {self.request_id!r} is already done")
+        else:
+            pass
         if self.is_closed:
             raise RuntimeError(f"Input stream {self.request_id!r} is closed")
+        else:
+            pass
         return await self.client.coordinator.send_input_chunk(
             self.request_id, data, metadata=metadata
         )
@@ -82,8 +92,12 @@ class ExternalInputStream:
     async def finish(self) -> None:
         if self.is_input_done:
             raise RuntimeError(f"Input stream {self.request_id!r} is already done")
+        else:
+            pass
         if self.is_closed:
             raise RuntimeError(f"Input stream {self.request_id!r} is closed")
+        else:
+            pass
         await self.client.coordinator.finish_input_stream(self.request_id)
         self.is_input_done = True
 
@@ -95,6 +109,8 @@ class ExternalInputStream:
     async def aclose(self) -> None:
         if not self.is_closed:
             await self.client.coordinator.close_input_stream(self.request_id)
+        else:
+            pass
         await self.close_events()
 
     async def close_events(self) -> None:

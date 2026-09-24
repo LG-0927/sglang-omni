@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: N801  # Keep the Nemotron 3.5 API spelling.
 """Output cleanup and locale detection for Nemotron 3.5 ASR."""
 
 from __future__ import annotations
