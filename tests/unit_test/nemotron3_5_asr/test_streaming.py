@@ -28,7 +28,7 @@ from sglang_omni.models.nemotron3_5_asr.streaming import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 LOOKAHEAD_3 = Nemotron3_5ASRStreamingChunkSpec(
     sample_rate=16000,

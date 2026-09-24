@@ -140,7 +140,7 @@ def test_coordinator_stream_start_chunk_done_and_cleanup() -> None:
         assert restored.tolist() == [1, 2]
         assert metadata == {"modality": "audio"}
 
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req", "asr", True, result={"text": "ok"})
         )
         assert [message async for message in events][-1].result == {"text": "ok"}
@@ -325,7 +325,7 @@ def test_completion_waits_for_inflight_send_and_prevents_late_writes() -> None:
         )
         await control_plane.entered.wait()
         completion_task = asyncio.create_task(
-            coordinator._handle_completion(
+            coordinator.handle_completion(
                 CompleteMessage("req", "asr", True, result={"text": "ok"})
             )
         )
@@ -468,16 +468,16 @@ def test_stage_accepts_ordered_external_stream_and_marks_payload() -> None:
         scheduler = make_external_scheduler()
         stage_obj, control_plane = make_stage_with_control_plane(scheduler)
         payload = make_payload()
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage("req", payload, external_input_stream=True)
         )
         request_message = scheduler.inbox.get_nowait()
         assert request_message.type == "new_request"
         assert request_message.data.external_input_stream is True
 
-        await stage_obj._on_stream_chunk(make_chunk("req", 0, 1))
-        await stage_obj._on_stream_chunk(make_chunk("req", 1, 2))
-        await stage_obj._on_stream_signal(
+        await stage_obj.on_stream_chunk(make_chunk("req", 0, 1))
+        await stage_obj.on_stream_chunk(make_chunk("req", 1, 2))
+        await stage_obj.on_stream_signal(
             DataReadyMessage("req", "coordinator", "asr", data_ref=None, is_done=True)
         )
         assert [scheduler.inbox.get_nowait().type for _ in range(3)] == [
@@ -487,7 +487,7 @@ def test_stage_accepts_ordered_external_stream_and_marks_payload() -> None:
         ]
         assert control_plane.completions == []
 
-        stage_obj._on_abort("req")
+        stage_obj.on_abort("req")
         assert "req" not in stage_obj.external_input_next_chunk_ids
         assert "req" not in stage_obj.external_input_done
         assert not stage_obj._stream_queue.has("req")
@@ -504,7 +504,7 @@ def test_stage_rejects_unsupported_or_unbounded_scheduler() -> None:
             supports_external_input_stream=False,
         )
         stage_obj, control_plane = make_stage_with_control_plane(unsupported)
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage(
                 "unsupported", make_payload("unsupported"), external_input_stream=True
             )
@@ -516,7 +516,7 @@ def test_stage_rejects_unsupported_or_unbounded_scheduler() -> None:
 
         unbounded = make_external_scheduler(maxsize=0)
         stage_obj, control_plane = make_stage_with_control_plane(unbounded)
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage(
                 "unbounded", make_payload("unbounded"), external_input_stream=True
             )
@@ -536,7 +536,7 @@ def test_stage_rejects_external_stream_for_tensor_parallel_stage_only() -> None:
             scheduler, role="leader", tp_size=2
         )
 
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage(
                 "external", make_payload("external"), external_input_stream=True
             )
@@ -547,7 +547,7 @@ def test_stage_rejects_external_stream_for_tensor_parallel_stage_only() -> None:
         assert "external" not in stage_obj._active_requests
         assert "external" not in stage_obj.external_input_next_chunk_ids
 
-        await stage_obj._on_submit(SubmitMessage("regular", make_payload("regular")))
+        await stage_obj.on_submit(SubmitMessage("regular", make_payload("regular")))
         request_message = scheduler.inbox.get_nowait()
         assert request_message.type == "new_request"
         assert request_message.request_id == "regular"
@@ -559,11 +559,11 @@ def test_stage_rejects_out_of_order_chunk() -> None:
     async def run() -> None:
         scheduler = make_external_scheduler()
         stage_obj, control_plane = make_stage_with_control_plane(scheduler)
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage("order", make_payload("order"), external_input_stream=True)
         )
         scheduler.inbox.get_nowait()
-        await stage_obj._on_stream_chunk(make_chunk("order", 1))
+        await stage_obj.on_stream_chunk(make_chunk("order", 1))
         assert "expected chunk_id=0" in control_plane.completions[0].error
         assert scheduler.aborted == ["order"]
 
@@ -574,13 +574,13 @@ def test_stage_waits_for_chunk_and_done_queue_capacity() -> None:
     async def run() -> None:
         scheduler = make_external_scheduler(maxsize=1)
         stage_obj, control_plane = make_stage_with_control_plane(scheduler)
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage("req", make_payload(), external_input_stream=True)
         )
         assert scheduler.inbox.qsize() == 1
 
         chunk_task = asyncio.create_task(
-            stage_obj._on_stream_chunk(make_chunk("req", 0))
+            stage_obj.on_stream_chunk(make_chunk("req", 0))
         )
         await asyncio.sleep(stage_runtime.EXTERNAL_INPUT_ENQUEUE_RETRY_S * 2)
         assert not chunk_task.done()
@@ -589,7 +589,7 @@ def test_stage_waits_for_chunk_and_done_queue_capacity() -> None:
         assert scheduler.inbox.qsize() == 1
 
         done_task = asyncio.create_task(
-            stage_obj._on_stream_signal(
+            stage_obj.on_stream_signal(
                 DataReadyMessage(
                     "req", "coordinator", "asr", data_ref=None, is_done=True
                 )
@@ -611,11 +611,11 @@ def test_stage_queue_timeout_fails_and_cleans_stream() -> None:
         stage_obj, control_plane = make_stage_with_control_plane(
             scheduler, external_input_enqueue_timeout_s=0.02
         )
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage("req", make_payload(), external_input_stream=True)
         )
 
-        await stage_obj._on_stream_chunk(make_chunk("req", 0))
+        await stage_obj.on_stream_chunk(make_chunk("req", 0))
 
         assert "timed out waiting" in control_plane.completions[0].error
         assert scheduler.aborted == ["req"]
@@ -631,16 +631,16 @@ def test_stage_abort_interrupts_queue_wait_without_failure() -> None:
     async def run() -> None:
         scheduler = make_external_scheduler(maxsize=1)
         stage_obj, control_plane = make_stage_with_control_plane(scheduler)
-        await stage_obj._on_submit(
+        await stage_obj.on_submit(
             SubmitMessage("req", make_payload(), external_input_stream=True)
         )
 
         chunk_task = asyncio.create_task(
-            stage_obj._on_stream_chunk(make_chunk("req", 0))
+            stage_obj.on_stream_chunk(make_chunk("req", 0))
         )
         await asyncio.sleep(stage_runtime.EXTERNAL_INPUT_ENQUEUE_RETRY_S * 2)
         assert not chunk_task.done()
-        stage_obj._on_abort("req")
+        stage_obj.on_abort("req")
         await asyncio.wait_for(chunk_task, timeout=0.25)
 
         assert control_plane.completions == []

@@ -12,7 +12,7 @@ from sglang_omni.models.nemotron3_5_asr import request_builders, stages
 from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 def test_config_leaves_defaults_to_factory() -> None:

@@ -24,7 +24,7 @@ from sglang_omni.models.nemotron3_5_asr.request_builders import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 
 PCM16_BYTES_PER_SAMPLE = 2

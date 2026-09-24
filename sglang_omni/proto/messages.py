@@ -253,7 +253,7 @@ class SubmitMessage:
 
     def to_dict(self) -> dict[str, Any]:
         data = self.data
-        _require_bool(self.external_input_stream, "external_input_stream")
+        require_bool(self.external_input_stream, "external_input_stream")
         if isinstance(self.data, StagePayload):
             data = self.data.to_dict()
         d = {"type": "submit", "request_id": self.request_id, "data": data}
@@ -268,7 +268,7 @@ class SubmitMessage:
         data = d["data"]
         if isinstance(data, dict) and data.get("_type") == "StagePayload":
             data = StagePayload.from_dict(data)
-        external_input_stream = _require_bool(
+        external_input_stream = require_bool(
             d.get("external_input_stream", False), "external_input_stream"
         )
         return cls(

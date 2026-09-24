@@ -159,7 +159,7 @@ class Client:
         """Open a request that accepts bounded CPU tensor chunks."""
         req_id = request_id or str(uuid.uuid4())
         events = await self._coordinator.start_input_stream(
-            req_id, self._build_omni_request(request)
+            req_id, self.build_omni_request(request)
         )
         return ExternalInputStream(self, req_id, events)
 
