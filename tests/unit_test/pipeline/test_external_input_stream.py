@@ -145,8 +145,8 @@ def test_coordinator_stream_start_chunk_done_and_cleanup() -> None:
         )
         assert [message async for message in events][-1].result == {"text": "ok"}
         assert "req" not in coordinator.external_input_streams
-        assert "req" not in coordinator._stream_queues
-        assert "req" not in coordinator._completion_futures
+        assert "req" not in coordinator.stream_queues
+        assert "req" not in coordinator.completion_futures
 
     asyncio.run(run())
 
@@ -164,9 +164,9 @@ def test_coordinator_start_failure_rolls_back_every_owner() -> None:
         with pytest.raises(RuntimeError, match="start failed"):
             await coordinator.start_input_stream("req", OmniRequest(inputs=None))
 
-        assert "req" not in coordinator._requests
-        assert "req" not in coordinator._completion_futures
-        assert "req" not in coordinator._stream_queues
+        assert "req" not in coordinator.requests
+        assert "req" not in coordinator.completion_futures
+        assert "req" not in coordinator.stream_queues
         assert "req" not in coordinator.external_input_streams
 
     asyncio.run(run())
@@ -293,10 +293,10 @@ def test_abort_waits_for_inflight_send_and_cleans_all_owners() -> None:
         assert await abort_task is True
         assert len(control_plane.input_stream_events) == 1
         assert len(control_plane.aborts) == 1
-        assert "req" not in coordinator._requests
+        assert "req" not in coordinator.requests
         assert "req" not in coordinator.external_input_streams
-        assert "req" not in coordinator._stream_queues
-        assert "req" not in coordinator._completion_futures
+        assert "req" not in coordinator.stream_queues
+        assert "req" not in coordinator.completion_futures
         await handle.aclose()
 
     asyncio.run(run())
@@ -490,7 +490,7 @@ def test_stage_accepts_ordered_external_stream_and_marks_payload() -> None:
         stage_obj.on_abort("req")
         assert "req" not in stage_obj.external_input_next_chunk_ids
         assert "req" not in stage_obj.external_input_done
-        assert not stage_obj._stream_queue.has("req")
+        assert not stage_obj.stream_queue.has("req")
 
     asyncio.run(run())
 
@@ -511,7 +511,7 @@ def test_stage_rejects_unsupported_or_unbounded_scheduler() -> None:
         )
         assert "does not support" in control_plane.completions[0].error
         assert unsupported.inbox.empty()
-        assert "unsupported" not in stage_obj._active_requests
+        assert "unsupported" not in stage_obj.active_requests
         assert "unsupported" not in stage_obj.external_input_next_chunk_ids
 
         unbounded = make_external_scheduler(maxsize=0)
@@ -523,7 +523,7 @@ def test_stage_rejects_unsupported_or_unbounded_scheduler() -> None:
         )
         assert "must be bounded" in control_plane.completions[0].error
         assert unbounded.inbox.empty()
-        assert "unbounded" not in stage_obj._active_requests
+        assert "unbounded" not in stage_obj.active_requests
         assert "unbounded" not in stage_obj.external_input_next_chunk_ids
 
     asyncio.run(run())
@@ -544,7 +544,7 @@ def test_stage_rejects_external_stream_for_tensor_parallel_stage_only() -> None:
 
         assert "require tp_size=1; got tp_size=2" in control_plane.completions[0].error
         assert scheduler.inbox.empty()
-        assert "external" not in stage_obj._active_requests
+        assert "external" not in stage_obj.active_requests
         assert "external" not in stage_obj.external_input_next_chunk_ids
 
         await stage_obj.on_submit(SubmitMessage("regular", make_payload("regular")))
@@ -619,10 +619,10 @@ def test_stage_queue_timeout_fails_and_cleans_stream() -> None:
 
         assert "timed out waiting" in control_plane.completions[0].error
         assert scheduler.aborted == ["req"]
-        assert "req" not in stage_obj._active_requests
+        assert "req" not in stage_obj.active_requests
         assert "req" not in stage_obj.external_input_next_chunk_ids
         assert "req" not in stage_obj.external_input_done
-        assert not stage_obj._stream_queue.has("req")
+        assert not stage_obj.stream_queue.has("req")
 
     asyncio.run(run())
 
@@ -645,7 +645,7 @@ def test_stage_abort_interrupts_queue_wait_without_failure() -> None:
 
         assert control_plane.completions == []
         assert scheduler.aborted == ["req"]
-        assert "req" not in stage_obj._active_requests
+        assert "req" not in stage_obj.active_requests
         assert "req" not in stage_obj.external_input_next_chunk_ids
         assert "req" not in stage_obj.external_input_done
 
