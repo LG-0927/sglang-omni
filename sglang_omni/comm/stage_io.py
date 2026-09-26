@@ -328,9 +328,7 @@ def serialize_direct_cuda_ipc_stream_chunk(
 
 
 _INLINE_STREAM_CHUNK_TYPE = "InlineStreamChunk"
-INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
-# Backward-compatible alias for existing internal callers and tests.
-_INLINE_STREAM_CHUNK_BYTES_LIMIT = INLINE_STREAM_CHUNK_BYTES_LIMIT
+_INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
 
 
 def serialize_inline_stream_chunk(
@@ -344,17 +342,17 @@ def serialize_inline_stream_chunk(
         return None
     else:
         pass
-    if data.element_size() * data.numel() > INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if data.element_size() * data.numel() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         return None
     else:
         pass
     data = data.detach()
-    if data.untyped_storage().nbytes() > INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         data = data.clone(memory_format=torch.contiguous_format)
     else:
         pass
     payload = pickle.dumps((data, metadata))
-    if len(payload) > INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         return None
     else:
         pass
@@ -390,10 +388,10 @@ def deserialize_inline_stream_chunk(
         )
     else:
         pass
-    if len(payload) > INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         raise ValueError(
             "inline stream chunk payload exceeds "
-            f"{INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
+            f"{_INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
         )
     else:
         pass

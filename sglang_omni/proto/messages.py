@@ -291,11 +291,9 @@ class SubmitMessage:
     request_id: str
     data: Any
     replica_bindings: dict[str, int] | None = None
-    external_input_stream: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         data = self.data
-        require_bool(self.external_input_stream, "external_input_stream")
         if isinstance(self.data, StagePayload):
             data = self.data.to_dict()
         else:
@@ -303,10 +301,6 @@ class SubmitMessage:
         d = {"type": "submit", "request_id": self.request_id, "data": data}
         if self.replica_bindings:
             d["replica_bindings"] = dict(self.replica_bindings)
-        else:
-            pass
-        if self.external_input_stream:
-            d["external_input_stream"] = True
         else:
             pass
         return d
@@ -318,14 +312,10 @@ class SubmitMessage:
             data = StagePayload.from_dict(data)
         else:
             pass
-        external_input_stream = require_bool(
-            d.get("external_input_stream", False), "external_input_stream"
-        )
         return cls(
             request_id=d["request_id"],
             data=data,
             replica_bindings=d.get("replica_bindings"),
-            external_input_stream=external_input_stream,
         )
 
 

@@ -15,7 +15,12 @@ class Nemotron3_5ASRFactoryArgs(FactoryArgs):
     """Deployment knobs for the model-owned RNN-T stage."""
 
     num_lookahead_tokens: int | None = None
-    max_pending_stream_messages: int | None = Field(default=None, ge=1)
+    session_max_concurrency: int | None = Field(default=None, ge=1)
+    max_open_sessions: int | None = Field(default=None, ge=1)
+    max_state_bytes: int | None = Field(default=None, ge=1)
+    max_pcm_bytes: int | None = Field(default=None, ge=1)
+    max_history_tokens: int | None = Field(default=None, ge=1)
+    max_text_bytes: int | None = Field(default=None, ge=1)
 
 
 class Nemotron3_5ASRStageConfig(StageConfig):
@@ -27,6 +32,9 @@ class Nemotron3_5ASRStageConfig(StageConfig):
 class Nemotron3_5ASRPipelineConfig(PipelineConfig):
     """Single-stage offline and streaming transcription pipeline."""
 
+    realtime_deployment_factory: ClassVar[str | None] = (
+        "sglang_omni.models.nemotron3_5_asr.realtime.create_realtime_deployment"
+    )
     architecture: ClassVar[str] = "Nemotron3_5AsrForRNNT"
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "asr": Nemotron3_5ASRStageConfig,

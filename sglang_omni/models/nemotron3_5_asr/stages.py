@@ -3,17 +3,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
 
+from sglang_omni.models.nemotron3_5_asr.batch_engine import NemotronBatchEngine
 from sglang_omni.models.nemotron3_5_asr.model_runner import Nemotron3_5ASRModelRunner
-from sglang_omni.models.nemotron3_5_asr.request_builders import (
-    Nemotron3_5ASRRequest,
-    make_nemotron3_5_asr_request_builder,
-)
-from sglang_omni.models.nemotron3_5_asr.streaming import (
-    Nemotron3_5ASRStreamingScheduler,
-)
-from sglang_omni.proto import StagePayload
+from sglang_omni.models.nemotron3_5_asr.session import NemotronSessionScheduler
 from sglang_omni.utils.device import resolve_device_spec
 
 
@@ -26,66 +20,35 @@ def create_nemotron3_5_asr_executor(
     num_lookahead_tokens: int = 3,
     max_batch_size: int = 8,
     max_batch_wait_ms: float = 2.0,
-    max_pending_stream_messages: int = 256,
-) -> Nemotron3_5ASRStreamingScheduler:
-    if max_batch_size < 1:
-        raise ValueError("max_batch_size must be at least 1")
+    session_max_concurrency: int | None = None,
+    max_open_sessions: int = 64,
+    max_state_bytes: int = 8 * 1024 * 1024 * 1024,
+    max_pcm_bytes: int = 2 * 1024 * 1024,
+    max_history_tokens: int = 16384,
+    max_text_bytes: int = 2 * 1024 * 1024,
+) -> NemotronSessionScheduler:
+    concurrency = max(4, max_batch_size) if session_max_concurrency is None else session_max_concurrency
+    if min(max_batch_size, concurrency, max_open_sessions, max_state_bytes,
+           max_pcm_bytes, max_history_tokens, max_text_bytes) < 1:
+        raise ValueError("Nemotron batch, concurrency and resource budgets must be positive")
+    elif not math.isfinite(max_batch_wait_ms) or max_batch_wait_ms < 0:
+        raise ValueError("max_batch_wait_ms must be finite and non-negative")
     else:
-        pass
-    if max_batch_wait_ms < 0:
-        raise ValueError("max_batch_wait_ms must be non-negative")
-    else:
-        pass
-    if max_pending_stream_messages < 1:
-        raise ValueError("max_pending_stream_messages must be at least 1")
-    else:
-        pass
-
-    resolved_device = resolve_device_spec(device, gpu_id)
-    runner = Nemotron3_5ASRModelRunner(
-        model_path,
-        device=resolved_device,
-        dtype=dtype,
-        num_lookahead_tokens=num_lookahead_tokens,
-    )
-    build_request = make_nemotron3_5_asr_request_builder(
-        prompt_dictionary=runner.prompt_dictionary
-    )
-
-    def run_one(payload: StagePayload) -> StagePayload:
-        return runner.run_batch([build_request(payload)])[0]
-
-    def run_batch(
-        payloads: Sequence[StagePayload],
-    ) -> list[StagePayload | BaseException]:
-        results: dict[int, StagePayload | BaseException] = {}
-        valid: list[tuple[int, Nemotron3_5ASRRequest]] = []
-        for index, payload in enumerate(payloads):
-            try:
-                valid.append((index, build_request(payload)))
-            except Exception as exc:
-                results[index] = exc
-
-        if valid:
-            try:
-                batch_results = runner.run_batch([request for _, request in valid])
-            except Exception as exc:
-                batch_results = [exc] * len(valid)
-            for (index, _), result in zip(valid, batch_results, strict=True):
-                results[index] = result
-        else:
-            pass
-        return [results[index] for index in range(len(payloads))]
-
-    return Nemotron3_5ASRStreamingScheduler(
-        runner,
-        run_one,
-        batch_compute_fn=run_batch,
-        prompt_dictionary=runner.prompt_dictionary,
-        max_batch_size=max_batch_size,
-        max_batch_wait_ms=max_batch_wait_ms,
-        max_pending_messages=max_pending_stream_messages,
-    )
+        runner = Nemotron3_5ASRModelRunner(
+            model_path, device=resolve_device_spec(device, gpu_id), dtype=dtype,
+            num_lookahead_tokens=num_lookahead_tokens,
+        )
+        engine = NemotronBatchEngine(
+            runner, max_batch_size=max_batch_size, max_batch_wait_ms=max_batch_wait_ms,
+            max_pending_tasks=2 * concurrency + max_open_sessions,
+            max_open_sessions=max_open_sessions, max_state_bytes=max_state_bytes,
+            max_pcm_bytes=max_pcm_bytes, max_history_tokens=max_history_tokens,
+            max_text_bytes=max_text_bytes,
+        )
+        return NemotronSessionScheduler(
+            engine, max_concurrency=concurrency, max_open_sessions=max_open_sessions,
+            max_state_bytes=max_state_bytes,
+        )
 
 
 __all__ = ["create_nemotron3_5_asr_executor"]

@@ -52,6 +52,7 @@ class Nemotron3_5ASRStreamingBatchResult:
     raw_texts: list[str]
     clean_texts: list[str]
     languages: list[str | None]
+    errors: list[Exception | None] | None = None
 
 
 class Nemotron3_5ASRModelRunner:
@@ -110,6 +111,14 @@ class Nemotron3_5ASRModelRunner:
             "n_fft": int(feature_extractor.n_fft),
             "streaming_latency_ms": int(self.processor.streaming_latency_ms),
         }
+
+    @property
+    def streaming_state_budget_bytes(self) -> int:
+        # note (Li Gang): Reserve cache growth before creating a session, including convolution state.
+        config = self.model.config.encoder_config
+        cache_frames = config.sliding_window + self.processor.num_mel_frames_per_audio_chunk + 1
+        attention_bytes = 2 * config.num_hidden_layers * config.hidden_size * cache_frames * self.dtype.itemsize
+        return attention_bytes + 16 * 1024 * 1024
 
     def new_streaming_decode_state(self) -> Nemotron3_5ASRDecodeState:
         blank_token_id = int(self.model.config.blank_token_id)
@@ -190,20 +199,31 @@ class Nemotron3_5ASRModelRunner:
                 pass
             elapsed_s = time.perf_counter() - started_at_s
 
-        token_tensors = [
-            torch.tensor(state.tokens, dtype=torch.long) for state in states
-        ]
-        raw_texts = self.processor.batch_decode(
-            token_tensors, skip_special_tokens=False
-        )
+        raw_texts: list[str] = []
+        clean_texts: list[str] = []
+        languages: list[str | None] = []
+        errors: list[Exception | None] = []
+        for state, requested in zip(states, requested_languages, strict=True):
+            try:
+                raw_text = self.processor.batch_decode(
+                    [torch.tensor(state.tokens, dtype=torch.long)],
+                    skip_special_tokens=False,
+                )[0]
+                clean_text = clean_nemotron_text(raw_text)
+                language = resolve_nemotron_locale(raw_text, requested)
+            except Exception as exc:
+                raw_texts.append("")
+                clean_texts.append("")
+                languages.append(None)
+                errors.append(exc)
+            else:
+                raw_texts.append(raw_text)
+                clean_texts.append(clean_text)
+                languages.append(language)
+                errors.append(None)
         return Nemotron3_5ASRStreamingBatchResult(
-            elapsed_s=elapsed_s,
-            raw_texts=raw_texts,
-            clean_texts=[clean_nemotron_text(text) for text in raw_texts],
-            languages=[
-                resolve_nemotron_locale(raw_text, requested)
-                for raw_text, requested in zip(raw_texts, requested_languages)
-            ],
+            elapsed_s=elapsed_s, raw_texts=raw_texts, clean_texts=clean_texts,
+            languages=languages, errors=errors,
         )
 
     def generate_compatible_batch(

@@ -5,14 +5,10 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable, Sequence
-from contextlib import aclosing
 from dataclasses import dataclass, field, replace
-from typing import Any, AsyncGenerator, AsyncIterator
-
-import torch
+from typing import Any, AsyncIterator
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.comm import stage_io
 from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.pipeline.replicas import (
@@ -30,7 +26,6 @@ from sglang_omni.proto import (
     AdminResult,
     AdminResultMessage,
     CompleteMessage,
-    DataReadyMessage,
     OmniRequest,
     RequestInfo,
     RequestState,
@@ -43,9 +38,6 @@ from sglang_omni.proto import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_EXTERNAL_INPUT_CHUNKS = 4096
-DEFAULT_MAX_EXTERNAL_INPUT_BYTES = 64 * 1024 * 1024
-
 
 @dataclass
 class AdminPendingOperation:
@@ -53,17 +45,6 @@ class AdminPendingOperation:
     action: str
     results: dict[str, AdminResult] = field(default_factory=dict)
     future: asyncio.Future | None = None
-
-
-@dataclass
-class ExternalInputStream:
-    entry_stage: str
-    entry_endpoint: str
-    replica_bindings: dict[str, int] | None
-    next_chunk_id: int = 0
-    bytes_sent: int = 0
-    done: bool = False
-    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class Coordinator(CoordinatorSessions):
@@ -90,8 +71,6 @@ class Coordinator(CoordinatorSessions):
         logical_process_plan: LogicalProcessPlan | None = None,
         binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
-        max_external_input_chunks: int = DEFAULT_MAX_EXTERNAL_INPUT_CHUNKS,
-        max_external_input_bytes: int = DEFAULT_MAX_EXTERNAL_INPUT_BYTES,
     ):
         """Initialize coordinator.
 
@@ -129,16 +108,6 @@ class Coordinator(CoordinatorSessions):
             else:
                 pass
             self.max_in_flight = value
-        self.max_external_input_chunks = int(max_external_input_chunks)
-        self.max_external_input_bytes = int(max_external_input_bytes)
-        if self.max_external_input_chunks <= 0:
-            raise ValueError("max_external_input_chunks must be > 0")
-        else:
-            pass
-        if self.max_external_input_bytes <= 0:
-            raise ValueError("max_external_input_bytes must be > 0")
-        else:
-            pass
 
         # Control plane
         self.control_plane = CoordinatorControlPlane(
@@ -158,14 +127,12 @@ class Coordinator(CoordinatorSessions):
         # Abort messages carry only the request ID. A strongly held task keeps
         # local admission closed and lets the broadcast survive caller cancellation.
         self.abort_tasks: dict[str, asyncio.Task[bool]] = {}
-        self.external_input_streams: dict[str, ExternalInputStream] = {}
         self.admin_ops: dict[str, AdminPendingOperation] = {}
         self.admin_lock = asyncio.Lock()
 
         # State
         self.running = False
         self.fatal_error: str | None = None
-        self.external_input_writes_open = True
 
     def register_stage(self, name: str, endpoint: str) -> None:
         """Register a stage.
@@ -181,20 +148,12 @@ class Coordinator(CoordinatorSessions):
         """Start the coordinator."""
         await self.control_plane.start()
         self.running = True
-        self.external_input_writes_open = True
         logger.info("Coordinator started")
 
     async def stop(self) -> None:
         """Stop the coordinator."""
         await self.stop_sessions()
         self.running = False
-        self.external_input_writes_open = False
-        for request_id, stream in list(self.external_input_streams.items()):
-            async with stream.write_lock:
-                if self.external_input_streams.get(request_id) is stream:
-                    self.external_input_streams.pop(request_id, None)
-                else:
-                    pass
         self.control_plane.close()
         logger.info("Coordinator stopped")
 
@@ -203,45 +162,26 @@ class Coordinator(CoordinatorSessions):
         self.running = False
         message = str(error)
         self.fatal_error = message
-        self.external_input_writes_open = False
-        for request_id in list(self.requests):
-            stream = self.external_input_streams.get(request_id)
-            if stream is None:
-                await self.fail_pending_request(request_id, message)
-                continue
+        for request_id, info in list(self.requests.items()):
+            info.state = RequestState.FAILED
+            info.error = message
+            self.reject_completion_future(request_id, RuntimeError(message))
+            queue = self.stream_queues.get(request_id)
+            if queue is not None:
+                await queue.put(
+                    CompleteMessage(
+                        request_id=request_id,
+                        from_stage="coordinator",
+                        success=False,
+                        error=message,
+                    )
+                )
             else:
                 pass
-            async with stream.write_lock:
-                await self.fail_pending_request(request_id, message)
+        self.requests.clear()
         self.partial_results.clear()
         # Note (Junnan Li): Session pumps await request futures; wake them before waiting for cleanup.
         await self.fail_sessions(message)
-
-    async def fail_pending_request(self, request_id: str, message: str) -> None:
-        """Fail one request while its external-input write lock is held, if any."""
-        info = self.requests.get(request_id)
-        if info is None:
-            return
-        else:
-            pass
-        info.state = RequestState.FAILED
-        info.error = message
-        self.reject_completion_future(request_id, RuntimeError(message))
-        queue = self.stream_queues.get(request_id)
-        if queue is not None:
-            await queue.put(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage="coordinator",
-                    success=False,
-                    error=message,
-                )
-            )
-        else:
-            pass
-        self.requests.pop(request_id, None)
-        self.partial_results.pop(request_id, None)
-        self.external_input_streams.pop(request_id, None)
 
     async def shutdown_stages(self, stage_names: Sequence[str] | None = None) -> None:
         """Send shutdown to registered stages, or only to *stage_names*."""
@@ -437,143 +377,6 @@ class Coordinator(CoordinatorSessions):
         finally:
             self.completion_futures.pop(request_id, None)
 
-    async def start_input_stream(
-        self,
-        request_id: str,
-        request: OmniRequest | Any,
-    ) -> AsyncGenerator[CompleteMessage | StreamMessage, None]:
-        """Submit a request and return its output-event iterator."""
-        self.reject_session_metadata(request)
-        stream_queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
-        await self.submit_request(
-            request_id,
-            request,
-            stream_queue=stream_queue,
-            external_input_stream=True,
-        )
-        expected = self.expected_terminal_stages(request_id)
-        return self.stream_events(request_id, stream_queue, expected)
-
-    async def send_input_chunk(
-        self,
-        request_id: str,
-        data: torch.Tensor,
-        *,
-        metadata: dict[str, Any] | None = None,
-    ) -> int:
-        """Append one bounded CPU tensor to an active entry-stage input stream."""
-        if not isinstance(data, torch.Tensor):
-            raise TypeError("External input stream chunks must be torch.Tensor values")
-        else:
-            pass
-        if metadata is not None and not isinstance(metadata, dict):
-            raise TypeError("External input stream metadata must be a dict or None")
-        else:
-            pass
-        data_ref = stage_io.serialize_inline_stream_chunk(data, metadata)
-        if data_ref is None:
-            raise ValueError(
-                "External input stream chunks must be CPU tensors whose serialized "
-                f"payload is at most {stage_io.INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
-            )
-        else:
-            pass
-
-        stream = self.active_input_stream(request_id)
-        async with stream.write_lock:
-            self.ensure_current_input_stream(request_id, stream)
-            if stream.done:
-                raise RuntimeError(f"Input stream {request_id!r} is already done")
-            else:
-                pass
-            if stream.next_chunk_id >= self.max_external_input_chunks:
-                raise ValueError(
-                    f"Input stream {request_id!r} exceeds max_external_input_chunks="
-                    f"{self.max_external_input_chunks}"
-                )
-            else:
-                pass
-            chunk_bytes = data.element_size() * data.numel()
-            if stream.bytes_sent + chunk_bytes > self.max_external_input_bytes:
-                raise ValueError(
-                    f"Input stream {request_id!r} exceeds max_external_input_bytes="
-                    f"{self.max_external_input_bytes}"
-                )
-            else:
-                pass
-            chunk_id = stream.next_chunk_id
-            await self.control_plane.send_input_stream_event(
-                stream.entry_stage,
-                stream.entry_endpoint,
-                DataReadyMessage(
-                    request_id=request_id,
-                    from_stage="coordinator",
-                    to_stage=stream.entry_stage,
-                    data_ref=data_ref,
-                    chunk_id=chunk_id,
-                    replica_bindings=stream.replica_bindings,
-                ),
-            )
-            self.ensure_current_input_stream(request_id, stream)
-            stream.next_chunk_id += 1
-            stream.bytes_sent += chunk_bytes
-            return chunk_id
-
-    async def finish_input_stream(self, request_id: str) -> None:
-        """Mark an active entry-stage input stream complete."""
-        stream = self.active_input_stream(request_id)
-        async with stream.write_lock:
-            self.ensure_current_input_stream(request_id, stream)
-            if stream.done:
-                raise RuntimeError(f"Input stream {request_id!r} is already done")
-            else:
-                pass
-            await self.control_plane.send_input_stream_event(
-                stream.entry_stage,
-                stream.entry_endpoint,
-                DataReadyMessage(
-                    request_id=request_id,
-                    from_stage="coordinator",
-                    to_stage=stream.entry_stage,
-                    data_ref=None,
-                    is_done=True,
-                    replica_bindings=stream.replica_bindings,
-                ),
-            )
-            self.ensure_current_input_stream(request_id, stream)
-            stream.done = True
-
-    def active_input_stream(self, request_id: str) -> ExternalInputStream:
-        self.ensure_external_input_writes_open()
-        stream = self.external_input_streams.get(request_id)
-        if stream is None or request_id not in self.requests:
-            raise ValueError(f"No active input stream for request {request_id!r}")
-        else:
-            pass
-        return stream
-
-    def ensure_current_input_stream(
-        self, request_id: str, stream: ExternalInputStream
-    ) -> None:
-        self.ensure_external_input_writes_open()
-        if (
-            self.external_input_streams.get(request_id) is not stream
-            or request_id not in self.requests
-        ):
-            raise ValueError(f"No active input stream for request {request_id!r}")
-        else:
-            pass
-
-    def ensure_external_input_writes_open(self) -> None:
-        if self.fatal_error is not None:
-            raise RuntimeError(self.fatal_error)
-        else:
-            pass
-        if not self.external_input_writes_open:
-            raise RuntimeError("Coordinator is not accepting external input writes")
-        else:
-            pass
-
     async def stream(
         self, request_id: str, request: OmniRequest | Any
     ) -> AsyncIterator[CompleteMessage | StreamMessage]:
@@ -581,21 +384,11 @@ class Coordinator(CoordinatorSessions):
         queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
 
         self.reject_session_metadata(request)
-        await self.submit_request(request_id, request, stream_queue=queue)
-        expected = self.expected_terminal_stages(request_id)
-        events = self.stream_events(request_id, queue, expected)
-        async with aclosing(events):
-            async for msg in events:
-                yield msg
-
-    async def stream_events(
-        self,
-        request_id: str,
-        queue: asyncio.Queue[CompleteMessage | StreamMessage],
-        expected_terminal_stages: set[str],
-    ) -> AsyncGenerator[CompleteMessage | StreamMessage, None]:
-        completed_stages: set[str] = set()
         try:
+            await self.submit_request(request_id, request, stream_queue=queue)
+            expected_terminal_stages = self.expected_terminal_stages(request_id)
+
+            completed_stages: set[str] = set()
             while True:
                 msg = await queue.get()
                 if isinstance(msg, CompleteMessage):
@@ -623,6 +416,8 @@ class Coordinator(CoordinatorSessions):
                         try:
                             await self.abort(request_id)
                         except Exception:
+                            # The coordinator-owned abort task logs its own failure.
+                            # Do not replace the exception already leaving the stream.
                             pass
                     else:
                         pass
@@ -630,7 +425,6 @@ class Coordinator(CoordinatorSessions):
                     if self.stream_queues.get(request_id) is queue:
                         self.stream_queues.pop(request_id, None)
                         self.completion_futures.pop(request_id, None)
-                        self.external_input_streams.pop(request_id, None)
                     else:
                         pass
             else:
@@ -642,7 +436,6 @@ class Coordinator(CoordinatorSessions):
         request: OmniRequest | Any,
         *,
         stream_queue: asyncio.Queue[CompleteMessage | StreamMessage] | None = None,
-        external_input_stream: bool = False,
         target_stage: str | None = None,
         terminal_stages: set[str] | None = None,
         replica_bindings: dict[str, int] | None = None,
@@ -651,10 +444,6 @@ class Coordinator(CoordinatorSessions):
         """Submit a request without waiting for completion."""
         if self.fatal_error is not None:
             raise RuntimeError(self.fatal_error)
-        else:
-            pass
-        if external_input_stream:
-            self.ensure_external_input_writes_open()
         else:
             pass
         if self.request_id_is_reserved(request_id):
@@ -720,14 +509,6 @@ class Coordinator(CoordinatorSessions):
             self.stream_queues[request_id] = stream_queue
         else:
             pass
-        if external_input_stream:
-            self.external_input_streams[request_id] = ExternalInputStream(
-                entry_stage=entry_instance,
-                entry_endpoint=entry_info.control_endpoint,
-                replica_bindings=replica_bindings,
-            )
-        else:
-            pass
 
         payload = StagePayload(
             request_id=request_id,
@@ -750,14 +531,12 @@ class Coordinator(CoordinatorSessions):
                     request_id=request_id,
                     data=payload,
                     replica_bindings=replica_bindings,
-                    external_input_stream=external_input_stream,
                 ),
             )
         except BaseException:
             self.requests.pop(request_id, None)
             self.partial_results.pop(request_id, None)
             self.stream_queues.pop(request_id, None)
-            self.external_input_streams.pop(request_id, None)
             pending = self.completion_futures.pop(request_id, None)
             if pending is not None and not pending.done():
                 pending.cancel()
@@ -787,7 +566,6 @@ class Coordinator(CoordinatorSessions):
             or request_id in self.completion_futures
             or request_id in self.stream_queues
             or request_id in self.abort_tasks
-            or request_id in self.external_input_streams
         )
 
     def reject_completion_future(
@@ -853,15 +631,6 @@ class Coordinator(CoordinatorSessions):
         self,
         request_id: str,
     ) -> bool:
-        stream = self.external_input_streams.get(request_id)
-        if stream is not None:
-            async with stream.write_lock:
-                return await self.run_abort_locked(request_id)
-        else:
-            pass
-        return await self.run_abort_locked(request_id)
-
-    async def run_abort_locked(self, request_id: str) -> bool:
         await self.control_plane.broadcast_abort(AbortMessage(request_id=request_id))
 
         info = self.requests.get(request_id)
@@ -889,18 +658,9 @@ class Coordinator(CoordinatorSessions):
 
         self.requests.pop(request_id, None)
         self.partial_results.pop(request_id, None)
-        self.external_input_streams.pop(request_id, None)
 
         logger.info("Coordinator aborted req=%s", request_id)
         return True
-
-    async def close_input_stream(self, request_id: str) -> bool:
-        """Abort if active and release every coordinator-side stream owner."""
-        aborted = await self.abort(request_id)
-        self.stream_queues.pop(request_id, None)
-        self.completion_futures.pop(request_id, None)
-        self.external_input_streams.pop(request_id, None)
-        return aborted
 
     def on_abort_task_done(
         self,
@@ -947,17 +707,6 @@ class Coordinator(CoordinatorSessions):
             raise
 
     async def handle_completion(self, msg: CompleteMessage) -> None:
-        """Serialize terminal state with external input writes for this request."""
-        stream = self.external_input_streams.get(msg.request_id)
-        if stream is None:
-            await self.handle_completion_locked(msg)
-            return
-        else:
-            pass
-        async with stream.write_lock:
-            await self.handle_completion_locked(msg)
-
-    async def handle_completion_locked(self, msg: CompleteMessage) -> None:
         """Handle a completion message from a stage."""
         request_id = msg.request_id
         logger.debug(
@@ -1013,7 +762,6 @@ class Coordinator(CoordinatorSessions):
             else:
                 pass
             self.requests.pop(request_id, None)
-            self.external_input_streams.pop(request_id, None)
             return
         else:
             pass
@@ -1048,7 +796,6 @@ class Coordinator(CoordinatorSessions):
             else:
                 pass
             self.requests.pop(request_id, None)
-            self.external_input_streams.pop(request_id, None)
             return
         else:
             pass
@@ -1083,7 +830,6 @@ class Coordinator(CoordinatorSessions):
         else:
             pass
         self.requests.pop(request_id, None)
-        self.external_input_streams.pop(request_id, None)
 
     async def handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""

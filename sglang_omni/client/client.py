@@ -7,8 +7,7 @@ import asyncio
 import uuid
 from contextlib import aclosing
 from dataclasses import replace
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable
 
 import numpy as np
 
@@ -32,107 +31,13 @@ from sglang_omni.client.types import (
     UsageInfo,
 )
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import CompleteMessage, OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
     SessionLimits,
     TimedChunk,
 )
-
-if TYPE_CHECKING:
-    import torch
-else:
-    pass
-
-
-class ExternalInputStream:
-    """Handle for incrementally supplied entry-stage input."""
-
-    def __init__(
-        self,
-        client: Client,
-        request_id: str,
-        events: AsyncGenerator[CompleteMessage | StreamMessage, None],
-    ) -> None:
-        self.client = client
-        self.request_id = request_id
-        self.events = events
-        self.is_input_done = False
-        self.is_closed = False
-
-    def __aiter__(self) -> ExternalInputStream:
-        return self
-
-    async def __anext__(self) -> GenerateChunk:
-        if self.is_closed:
-            raise StopAsyncIteration
-        else:
-            pass
-        try:
-            msg = await anext(self.events)
-        except StopAsyncIteration:
-            self.is_closed = True
-            raise
-        if isinstance(msg, StreamMessage):
-            return self.client.stream_builder(self.request_id, msg)
-        else:
-            pass
-        return self.client.result_builder(self.request_id, msg.result)
-
-    async def send(
-        self, data: torch.Tensor, *, metadata: dict[str, object] | None = None
-    ) -> int:
-        if self.is_input_done:
-            raise RuntimeError(f"Input stream {self.request_id!r} is already done")
-        else:
-            pass
-        if self.is_closed:
-            raise RuntimeError(f"Input stream {self.request_id!r} is closed")
-        else:
-            pass
-        return await self.client.coordinator.send_input_chunk(
-            self.request_id, data, metadata=metadata
-        )
-
-    async def finish(self) -> None:
-        if self.is_input_done:
-            raise RuntimeError(f"Input stream {self.request_id!r} is already done")
-        else:
-            pass
-        if self.is_closed:
-            raise RuntimeError(f"Input stream {self.request_id!r} is closed")
-        else:
-            pass
-        await self.client.coordinator.finish_input_stream(self.request_id)
-        self.is_input_done = True
-
-    async def abort(self) -> AbortResult:
-        success = await self.client.coordinator.close_input_stream(self.request_id)
-        await self.close_events()
-        return AbortResult(success=success, level_applied=AbortLevel.SOFT)
-
-    async def aclose(self) -> None:
-        if not self.is_closed:
-            await self.client.coordinator.close_input_stream(self.request_id)
-        else:
-            pass
-        await self.close_events()
-
-    async def close_events(self) -> None:
-        self.is_closed = True
-        await self.events.aclose()
-
-    async def __aenter__(self) -> ExternalInputStream:
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.aclose()
 
 
 class Client:
@@ -199,19 +104,6 @@ class Client:
 
         result = await self.coordinator.submit(req_id, omni_request)
         yield self.result_builder(req_id, result)
-
-    async def start_input_stream(
-        self,
-        request: GenerateRequest,
-        *,
-        request_id: str | None = None,
-    ) -> ExternalInputStream:
-        """Open a request that accepts bounded CPU tensor chunks."""
-        req_id = request_id or str(uuid.uuid4())
-        events = await self.coordinator.start_input_stream(
-            req_id, self.build_omni_request(request)
-        )
-        return ExternalInputStream(self, req_id, events)
 
     # ------------------------------------------------------------------
     # High-level: non-streaming completion

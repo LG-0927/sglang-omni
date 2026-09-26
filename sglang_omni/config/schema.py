@@ -373,7 +373,6 @@ class StageConfig(BaseModel):
     stream_to: list[str] = Field(default_factory=list)
     stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
-    external_input_enqueue_timeout_s: float = Field(default=1.0, gt=0)
     disable_direct_cuda_ipc_payload: bool = False
     project_payload: dict[str, str] = Field(default_factory=dict)
     comm: CommConfig | None = None

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -42,6 +42,7 @@ def test_factory_transcribes_single_and_batched_requests(
     request_languages: list[tuple[str, str]],
 ) -> None:
     runner = Mock(spec=stages.Nemotron3_5ASRModelRunner)
+    runner.streaming_state_budget_bytes = 1024
     runner.prompt_dictionary = {"auto": 101}
     runner.streaming_chunk_spec = dict(
         sample_rate=16000,
@@ -70,7 +71,7 @@ def test_factory_transcribes_single_and_batched_requests(
         ),
     )
     scheduler = stages.create_nemotron3_5_asr_executor("checkpoint", device="cpu")
-    assert scheduler.inbox.maxsize == 256
+    assert scheduler.max_concurrency == 8
     payloads = [
         StagePayload(
             request_id=name,
@@ -79,22 +80,19 @@ def test_factory_transcribes_single_and_batched_requests(
         )
         for name, language in request_languages
     ]
-    loop = asyncio.new_event_loop()
+    for payload in payloads:
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+    thread = threading.Thread(target=scheduler.start)
+    thread.start()
     try:
-        scheduler.run_non_streaming_batch(
-            [
-                IncomingMessage(payload.request_id, "new_request", payload)
-                for payload in payloads
-            ],
-            loop,
-        )
+        outputs = {
+            message.request_id: message
+            for message in [scheduler.outbox.get(timeout=5) for _ in payloads]
+        }
     finally:
-        loop.close()
         scheduler.stop()
-    outputs = {
-        message.request_id: message
-        for message in [scheduler.outbox.get_nowait() for _ in payloads]
-    }
+        thread.join(5)
+    assert not thread.is_alive()
     for name, language in request_languages:
         if language != "auto":
             assert isinstance(outputs[name].data, ValueError)
