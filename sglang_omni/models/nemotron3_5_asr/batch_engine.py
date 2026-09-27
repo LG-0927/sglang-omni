@@ -14,6 +14,7 @@ from typing import Literal
 from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
+    Nemotron3_5ASRStreamingBatchResult,
 )
 from sglang_omni.models.nemotron3_5_asr.request_builders import (
     Nemotron3_5ASRRequest,
@@ -31,6 +32,9 @@ from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 
 logger = logging.getLogger(__name__)
 
+TaskResult = AppendResult | StagePayload | None
+BatchKind = Literal["stream", "offline"]
+
 
 @dataclass(kw_only=True)
 class ModelTask:
@@ -39,10 +43,13 @@ class ModelTask:
     identity: SessionIdentity | None = None
     chunk: TimedChunk | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
-    future: Future[AppendResult | StagePayload | None] = field(default_factory=Future)
+    future: Future[TaskResult] = field(default_factory=Future)
     ready_since: float = field(default_factory=time.monotonic)
     previous_text: str = ""
     is_first_output: bool = False
+
+
+StreamLane = tuple[SessionIdentity, ModelTask, Nemotron3_5ASRStreamState]
 
 
 class NemotronBatchEngine:
@@ -74,11 +81,13 @@ class NemotronBatchEngine:
         self.max_text_bytes = max_text_bytes
         self.session_reservation = (
             runner.streaming_state_budget_bytes
-            + max_pcm_bytes + max_history_tokens * 96 + max_text_bytes * 12
+            + max_pcm_bytes
+            + max_history_tokens * 96
+            + max_text_bytes * 12
         )
         self.condition = threading.Condition()
         self.commands: deque[ModelTask] = deque()
-        self.tasks: dict[Future[AppendResult | StagePayload | None], ModelTask] = {}
+        self.tasks: dict[Future[TaskResult], ModelTask] = {}
         self.closes: dict[SessionIdentity, Future[None]] = {}
         self.states: dict[SessionIdentity, Nemotron3_5ASRStreamState] = {}
         self.ready: OrderedDict[SessionIdentity, ModelTask] = OrderedDict()
@@ -87,37 +96,64 @@ class NemotronBatchEngine:
         self.is_stopping = False
         self.is_finalizing = False
         self.failure: BaseException | None = None
-        self.last_kind: Literal["stream", "offline"] = "offline"
+        self.last_kind: BatchKind = "offline"
         self.thread = threading.Thread(target=self.run, name="nemotron-model")
         self.thread.start()
 
-    def submit(self, task: ModelTask) -> Future[AppendResult | StagePayload | None]:
+    def submit(self, task: ModelTask) -> Future[TaskResult]:
         with self.condition:
             if self.failure is not None:
-                task.future.set_exception(RuntimeError(f"Nemotron engine failed: {self.failure}"))
+                task.future.set_exception(
+                    RuntimeError(f"Nemotron engine failed: {self.failure}")
+                )
             elif self.is_stopping:
                 task.future.set_exception(RuntimeError("Nemotron engine is stopping"))
             elif len(self.tasks) >= self.max_pending_tasks:
-                task.future.set_exception(RuntimeError("Nemotron accepted operation exceeds task budget"))
+                task.future.set_exception(
+                    RuntimeError("Nemotron accepted operation exceeds task budget")
+                )
             else:
                 self.tasks[task.future] = task
                 self.commands.append(task)
                 self.condition.notify()
         return task.future
 
-    def open(self, identity: SessionIdentity, request: OmniRequest) -> Future[AppendResult | StagePayload | None]:
-        return self.submit(ModelTask(
-            kind="open", identity=identity,
-            payload=StagePayload(request_id=identity.id, request=request, data=None),
-        ))
+    def open(
+        self, identity: SessionIdentity, request: OmniRequest
+    ) -> Future[TaskResult]:
+        return self.submit(
+            ModelTask(
+                kind="open",
+                identity=identity,
+                payload=StagePayload(
+                    request_id=identity.id, request=request, data=None
+                ),
+            )
+        )
 
-    def append(self, identity: SessionIdentity, chunk: TimedChunk, payload: StagePayload,
-               cancelled: threading.Event) -> Future[AppendResult | StagePayload | None]:
-        return self.submit(ModelTask(kind="append", identity=identity, chunk=chunk,
-                                     payload=payload, cancelled=cancelled))
+    def append(
+        self,
+        identity: SessionIdentity,
+        chunk: TimedChunk,
+        payload: StagePayload,
+        cancelled: threading.Event,
+    ) -> Future[TaskResult]:
+        return self.submit(
+            ModelTask(
+                kind="append",
+                identity=identity,
+                chunk=chunk,
+                payload=payload,
+                cancelled=cancelled,
+            )
+        )
 
-    def submit_offline(self, payload: StagePayload, cancelled: threading.Event) -> Future[AppendResult | StagePayload | None]:
-        return self.submit(ModelTask(kind="offline", payload=payload, cancelled=cancelled))
+    def submit_offline(
+        self, payload: StagePayload, cancelled: threading.Event
+    ) -> Future[TaskResult]:
+        return self.submit(
+            ModelTask(kind="offline", payload=payload, cancelled=cancelled)
+        )
 
     def close(self, identity: SessionIdentity) -> Future[None]:
         with self.condition:
@@ -145,7 +181,9 @@ class NemotronBatchEngine:
             for task in self.tasks.values():
                 task.cancelled.set()
                 if not task.future.done():
-                    task.future.set_exception(RuntimeError("Nemotron engine is stopping"))
+                    task.future.set_exception(
+                        RuntimeError("Nemotron engine is stopping")
+                    )
                 else:
                     pass
             self.condition.notify_all()
@@ -157,8 +195,12 @@ class NemotronBatchEngine:
             self.condition.notify_all()
         self.thread.join()
 
-    def finish(self, task: ModelTask, result: AppendResult | StagePayload | None = None,
-               error: BaseException | None = None) -> None:
+    def finish(
+        self,
+        task: ModelTask,
+        result: TaskResult = None,
+        error: BaseException | None = None,
+    ) -> None:
         with self.condition:
             self.tasks.pop(task.future, None)
             if task.future.done():
@@ -170,7 +212,9 @@ class NemotronBatchEngine:
             else:
                 task.future.set_result(result)
 
-    def release(self, identity: SessionIdentity, error: BaseException | None = None) -> None:
+    def release(
+        self, identity: SessionIdentity, error: BaseException | None = None
+    ) -> None:
         task = self.ready.pop(identity, None)
         self.states.pop(identity, None)
         with self.condition:
@@ -183,46 +227,19 @@ class NemotronBatchEngine:
     def accept(self, task: ModelTask) -> None:
         if task.cancelled.is_set() or task.future.done():
             self.finish(task)
-            return
         elif task.kind == "offline":
             self.offline.append(task)
-            return
         else:
-            identity = task.identity
-            assert identity is not None
+            self.accept_session_task(task)
+
+    def accept_session_task(self, task: ModelTask) -> None:
+        identity = task.identity
+        assert identity is not None
         try:
             if task.kind == "open":
-                if identity in self.states:
-                    raise ValueError("Nemotron session already opened")
-                elif len(self.states) >= self.max_open_sessions or (
-                    (len(self.states) + 1) * self.session_reservation > self.max_state_bytes
-                ):
-                    raise RuntimeError("Nemotron session state reservation exhausted")
-                else:
-                    params = task.payload.request.params or {}
-                    token_limit = validate_nemotron_greedy_params(params)
-                    language = normalize_nemotron_language(params.get("language"), self.runner.prompt_dictionary)
-                    state = Nemotron3_5ASRStreamState(
-                        request_id=identity.id, payload=task.payload, language=language,
-                        spec=self.spec, decode=self.runner.new_streaming_decode_state(),
-                        max_new_tokens=token_limit,
-                    )
-                    self.states[identity] = state
-                    self.publish_usage(identity, state)
-                    self.finish(task)
+                self.open_session_task(task, identity)
             else:
-                state = self.states[identity]
-                chunk = task.chunk
-                assert chunk is not None
-                if identity in self.ready:
-                    raise RuntimeError("concurrent append for one Nemotron session")
-                else:
-                    task.previous_text = state.clean_text
-                    task.is_first_output = not state.clean_text
-                    state.append_chunk(chunk, self.max_pcm_bytes)
-                    task.ready_since = time.monotonic()
-                    self.ready[identity] = task
-                    self.complete_if_drained(identity, task, state)
+                self.append_session_task(task, identity)
         except Exception as exc:
             if task.kind != "open" or identity in self.states:
                 self.release(identity, exc)
@@ -230,12 +247,57 @@ class NemotronBatchEngine:
                 pass
             self.finish(task, error=exc)
 
-    def publish_usage(self, identity: SessionIdentity, state: Nemotron3_5ASRStreamState) -> None:
+    def open_session_task(self, task: ModelTask, identity: SessionIdentity) -> None:
+        if identity in self.states:
+            raise ValueError("Nemotron session already opened")
+        elif len(self.states) >= self.max_open_sessions or (
+            (len(self.states) + 1) * self.session_reservation > self.max_state_bytes
+        ):
+            raise RuntimeError("Nemotron session state reservation exhausted")
+        else:
+            params = task.payload.request.params or {}
+            token_limit = validate_nemotron_greedy_params(params)
+            language = normalize_nemotron_language(
+                params.get("language"), self.runner.prompt_dictionary
+            )
+            state = Nemotron3_5ASRStreamState(
+                request_id=identity.id,
+                payload=task.payload,
+                language=language,
+                spec=self.spec,
+                decode=self.runner.new_streaming_decode_state(),
+                max_new_tokens=token_limit,
+            )
+            self.states[identity] = state
+            self.publish_usage(identity, state)
+            self.finish(task)
+
+    def append_session_task(self, task: ModelTask, identity: SessionIdentity) -> None:
+        state = self.states[identity]
+        chunk = task.chunk
+        assert chunk is not None
+        if identity in self.ready:
+            raise RuntimeError("concurrent append for one Nemotron session")
+        else:
+            task.previous_text = state.clean_text
+            task.is_first_output = not state.clean_text
+            state.append_chunk(chunk, self.max_pcm_bytes)
+            task.ready_since = time.monotonic()
+            self.ready[identity] = task
+            self.complete_if_drained(identity, task, state)
+
+    def publish_usage(
+        self, identity: SessionIdentity, state: Nemotron3_5ASRStreamState
+    ) -> None:
         with self.condition:
             self.usage_snapshots[identity] = state.usage(self.session_reservation)
 
-    def complete_if_drained(self, identity: SessionIdentity, task: ModelTask,
-                            state: Nemotron3_5ASRStreamState) -> None:
+    def complete_if_drained(
+        self,
+        identity: SessionIdentity,
+        task: ModelTask,
+        state: Nemotron3_5ASRStreamState,
+    ) -> None:
         if task.cancelled.is_set() or task.future.done():
             self.release(identity)
         elif state.has_ready_window():
@@ -244,42 +306,67 @@ class NemotronBatchEngine:
             state.trim_pcm()
             self.publish_usage(identity, state)
             self.ready.pop(identity, None)
-            self.finish(task, state.append_result(task.payload, task.previous_text, task.is_first_output))
+            self.finish(
+                task,
+                state.append_result(
+                    task.payload, task.previous_text, task.is_first_output
+                ),
+            )
 
     def run_stream_batch(self) -> None:
-        lanes: list[tuple[SessionIdentity, ModelTask, Nemotron3_5ASRStreamState]] = []
-        chunks: list[Nemotron3_5ASRPreparedChunk] = []
-        for identity, task in list(self.ready.items())[:self.max_batch_size]:
-            state = self.states[identity]
-            try:
-                if task.cancelled.is_set() or task.future.done():
-                    self.release(identity)
-                    continue
-                elif len(state.decode.tokens) + self.spec.subsequent_frames * 11 >= self.max_history_tokens:
-                    raise RuntimeError("Nemotron token history budget exhausted")
-                else:
-                    window = state.pop_ready_window()
-                    prepared = self.runner.prepare_streaming_chunk(
-                        window.waveform, language=state.language, is_first=window.is_first)
-                    lanes.append((identity, task, state))
-                    chunks.append(prepared)
-                    self.ready.move_to_end(identity)
-            except Exception as exc:
-                self.release(identity, exc)
+        lanes, chunks = self.collect_stream_lanes()
         if not lanes:
             return
         else:
             pass
         try:
             result = self.runner.run_streaming_batch(
-                [state.decode for _, _, state in lanes], chunks,
+                [state.decode for _, _, state in lanes],
+                chunks,
                 requested_languages=[state.language for _, _, state in lanes],
                 max_new_tokens=[state.max_new_tokens for _, _, state in lanes],
             )
         except Exception as exc:
             for identity, _, _ in lanes:
                 self.release(identity, exc)
-            return
+        else:
+            self.apply_stream_results(lanes, result)
+
+    def collect_stream_lanes(
+        self,
+    ) -> tuple[list[StreamLane], list[Nemotron3_5ASRPreparedChunk]]:
+        lanes: list[StreamLane] = []
+        chunks: list[Nemotron3_5ASRPreparedChunk] = []
+        for identity, task in list(self.ready.items())[: self.max_batch_size]:
+            state = self.states[identity]
+            try:
+                if task.cancelled.is_set() or task.future.done():
+                    self.release(identity)
+                    continue
+                elif (
+                    len(state.decode.tokens) + self.spec.subsequent_frames * 11
+                    >= self.max_history_tokens
+                ):
+                    raise RuntimeError("Nemotron token history budget exhausted")
+                else:
+                    window = state.pop_ready_window()
+                    prepared = self.runner.prepare_streaming_chunk(
+                        window.waveform,
+                        language=state.language,
+                        is_first=window.is_first,
+                    )
+                    lanes.append((identity, task, state))
+                    chunks.append(prepared)
+                    self.ready.move_to_end(identity)
+            except Exception as exc:
+                self.release(identity, exc)
+        return lanes, chunks
+
+    def apply_stream_results(
+        self,
+        lanes: list[StreamLane],
+        result: Nemotron3_5ASRStreamingBatchResult,
+    ) -> None:
         for index, (identity, task, state) in enumerate(lanes):
             try:
                 if result.errors is not None and result.errors[index] is not None:
@@ -288,8 +375,13 @@ class NemotronBatchEngine:
                     pass
                 text = result.clean_texts[index]
                 if not text.startswith(state.clean_text):
-                    raise RuntimeError("Nemotron streaming transcript changed a previously emitted prefix")
-                elif len(text.encode()) + len(result.raw_texts[index].encode()) > self.max_text_bytes:
+                    raise RuntimeError(
+                        "Nemotron streaming transcript changed a previously emitted prefix"
+                    )
+                elif (
+                    len(text.encode()) + len(result.raw_texts[index].encode())
+                    > self.max_text_bytes
+                ):
                     raise RuntimeError("Nemotron transcript budget exhausted")
                 else:
                     state.raw_text = result.raw_texts[index]
@@ -327,59 +419,91 @@ class NemotronBatchEngine:
             for task, result in zip(lanes, results, strict=True):
                 self.finish(task, result)
 
+    def process_close_requests(
+        self, closes: dict[SessionIdentity, Future[None]]
+    ) -> None:
+        for identity, future in closes.items():
+            self.release(identity)
+            future.set_result(None)
+
+    def stop_pending_tasks(self) -> None:
+        for identity in list(self.states):
+            self.release(identity)
+        while self.offline:
+            self.finish(self.offline.popleft())
+
+    def release_cancelled_sessions(self) -> None:
+        for identity, task in list(self.ready.items()):
+            if task.cancelled.is_set() or task.future.done():
+                self.release(identity)
+            else:
+                pass
+
+    def select_batch(self) -> tuple[BatchKind | None, float | None]:
+        streaming = bool(self.ready)
+        offline = bool(self.offline)
+        if streaming or offline:
+            kind: BatchKind = (
+                "stream"
+                if streaming and (not offline or self.last_kind == "offline")
+                else "offline"
+            )
+            tasks = (
+                list(self.ready.values()) if kind == "stream" else list(self.offline)
+            )
+            remaining = (
+                min(task.ready_since for task in tasks)
+                + self.max_batch_wait_s
+                - time.monotonic()
+            )
+            if len(tasks) >= self.max_batch_size or remaining <= 0:
+                return kind, None
+            else:
+                return None, remaining
+        else:
+            return None, None
+
+    def wait_for_work(self, timeout: float | None) -> None:
+        with self.condition:
+            if not self.commands and not self.closes and not self.is_finalizing:
+                self.condition.wait(timeout)
+            else:
+                pass
+
+    def run_iteration(self) -> bool:
+        with self.condition:
+            closes = dict(self.closes)
+            self.closes.clear()
+            commands = list(self.commands)
+            self.commands.clear()
+            finalizing = self.is_finalizing
+            stopping = self.is_stopping
+        self.process_close_requests(closes)
+        for task in commands:
+            self.accept(task)
+        if stopping:
+            self.stop_pending_tasks()
+        else:
+            pass
+        if finalizing:
+            return False
+        else:
+            self.release_cancelled_sessions()
+            kind, timeout = self.select_batch()
+            if kind == "stream":
+                self.last_kind = kind
+                self.run_stream_batch()
+            elif kind == "offline":
+                self.last_kind = kind
+                self.run_offline_batch()
+            else:
+                self.wait_for_work(timeout)
+            return True
+
     def run(self) -> None:
         try:
-            while True:
-                with self.condition:
-                    closes = dict(self.closes)
-                    self.closes.clear()
-                    commands = list(self.commands)
-                    self.commands.clear()
-                    finalizing = self.is_finalizing
-                    stopping = self.is_stopping
-                for identity, future in closes.items():
-                    self.release(identity)
-                    future.set_result(None)
-                for task in commands:
-                    self.accept(task)
-                if stopping:
-                    for identity in list(self.states):
-                        self.release(identity)
-                    while self.offline:
-                        self.finish(self.offline.popleft())
-                else:
-                    pass
-                if finalizing:
-                    break
-                else:
-                    pass
-                for identity, task in list(self.ready.items()):
-                    if task.cancelled.is_set() or task.future.done():
-                        self.release(identity)
-                    else:
-                        pass
-                streaming = bool(self.ready)
-                offline = bool(self.offline)
-                if streaming or offline:
-                    kind = "stream" if streaming and (not offline or self.last_kind == "offline") else "offline"
-                    tasks = list(self.ready.values()) if kind == "stream" else list(self.offline)
-                    remaining = min(task.ready_since for task in tasks) + self.max_batch_wait_s - time.monotonic()
-                    if len(tasks) >= self.max_batch_size or remaining <= 0:
-                        self.last_kind = kind
-                        if kind == "stream":
-                            self.run_stream_batch()
-                        else:
-                            self.run_offline_batch()
-                        continue
-                    else:
-                        timeout = remaining
-                else:
-                    timeout = None
-                with self.condition:
-                    if not self.commands and not self.closes and not self.is_finalizing:
-                        self.condition.wait(timeout)
-                    else:
-                        pass
+            while self.run_iteration():
+                pass
         except BaseException as exc:
             logger.exception("Nemotron model owner failed")
             with self.condition:
@@ -388,7 +512,10 @@ class NemotronBatchEngine:
             with self.condition:
                 self.is_finalizing = True
                 for task in list(self.tasks.values()):
-                    self.finish(task, error=RuntimeError(f"Nemotron engine stopped: {self.failure}"))
+                    self.finish(
+                        task,
+                        error=RuntimeError(f"Nemotron engine stopped: {self.failure}"),
+                    )
                 for future in self.closes.values():
                     future.set_result(None)
                 self.closes.clear()
