@@ -383,9 +383,8 @@ def assemble_chunked_response(
     )
     adapter = speech_to_text.resolve_speech_to_text_adapter(architectures)
     raw_text = text
-    language = adapter.resolve_language(raw_text, language)
     if normalized_response_format == "text":
-        return PlainTextResponse(adapter.postprocess_plain_text(raw_text))
+        return PlainTextResponse(raw_text)
     else:
         pass
 

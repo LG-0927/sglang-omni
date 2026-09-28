@@ -34,13 +34,16 @@ generation base is aliased as `TransformersParakeetRNNTGenerationMixin`.
 Transformers hooks retain their original names, including generation hooks,
 `_get_arguments_from_pretrained`, `_init_weights`, and
 `_get_subsampling_output_length`, which Parakeet generation calls on the encoder.
+The vendored code is exempt from repository-specific naming and control-flow
+lint rules, so compatibility hooks retain their upstream shape.
 
 Regenerate this directory from the pinned upstream commit and reapply those
 compatibility changes and scope reductions when updating it. Remove the
 backport once the repository dependency moves to Transformers 5.13 or newer.
 
 Mixed-progress batching is implemented outside this backport in
-[`../encoder.py`](../encoder.py) and [`../attention_cache.py`](../attention_cache.py).
+[`../../models/nemotron3_5_asr/encoder.py`](../../models/nemotron3_5_asr/encoder.py)
+and [`../../models/nemotron3_5_asr/attention_cache.py`](../../models/nemotron3_5_asr/attention_cache.py).
 The runner calls the encoder adapter only for mixed-progress batches, reusing
 the loaded model's layers and projections without replacing its modules.
 When removing this backport, migrate the adapter's model and output-type imports

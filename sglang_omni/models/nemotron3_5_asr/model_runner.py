@@ -20,7 +20,7 @@ from sglang_omni.models.nemotron3_5_asr.decoder import (
     decode_streaming_batch,
 )
 from sglang_omni.models.nemotron3_5_asr.encoder import encode_streaming_batch
-from sglang_omni.models.nemotron3_5_asr.hf_compat import (
+from sglang_omni.vendor.nemotron3_5_asr import (
     Nemotron3_5AsrConfig,
     Nemotron3_5AsrForRNNT,
     Nemotron3_5AsrProcessor,

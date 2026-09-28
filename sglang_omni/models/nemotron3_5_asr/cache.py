@@ -7,7 +7,7 @@ import torch
 from torch.nn import functional as F
 from transformers.cache_utils import DynamicCache
 
-from sglang_omni.models.nemotron3_5_asr.hf_compat import (
+from sglang_omni.vendor.nemotron3_5_asr import (
     NemotronAsrStreamingEncoderCausalConvPaddingCache,
 )
 

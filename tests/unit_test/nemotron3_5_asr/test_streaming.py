@@ -11,7 +11,7 @@ import torch
 from transformers.cache_utils import DynamicCache
 
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
-from sglang_omni.models.nemotron3_5_asr.hf_compat import (
+from sglang_omni.vendor.nemotron3_5_asr import (
     Nemotron3_5AsrConfig,
     Nemotron3_5AsrRNNTDecoderCache,
 )

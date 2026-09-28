@@ -84,8 +84,6 @@ class Nemotron3_5AsrConfig(PreTrainedConfig):
             )
         elif self.encoder_config is None:
             self.encoder_config = NemotronAsrStreamingEncoderConfig()
-        else:
-            pass
 
         super().__post_init__(**kwargs)
 

@@ -40,24 +40,22 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
     chunks, which are encoded incrementally and appended to the encoder frame buffer as the decoder consumes it.
     """
 
-    def _update_model_kwargs_for_generation(  # noqa: leading-underscore  # Required compatibility name
+    def _update_model_kwargs_for_generation(
         self, outputs, model_kwargs, *args, **kwargs
     ):
-        model_kwargs = super()._update_model_kwargs_for_generation(  # noqa: leading-underscore  # Required compatibility name
+        model_kwargs = super()._update_model_kwargs_for_generation(
             outputs, model_kwargs, *args, **kwargs
         )
 
         if not getattr(
             self, "_streaming", False
-        ):  # noqa: leading-underscore  # Required compatibility name
+        ):
             return model_kwargs
-        else:
-            pass
 
         generator = model_kwargs.get("input_features_generator")
         if (
             not self._stream_exhausted
-            and bool(  # noqa: leading-underscore  # Required compatibility name
+            and bool(
                 (
                     model_kwargs["encoder_frame_idxs"]
                     >= model_kwargs["encoder_valid_lengths"]
@@ -68,7 +66,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
                 chunk = next(generator)
             except StopIteration:
                 self._stream_exhausted = (
-                    True  # noqa: leading-underscore  # Required compatibility name
+                    True
                 )
             else:
                 chunk = chunk.to(device=self.device, dtype=self.dtype)
@@ -77,7 +75,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
                     input_features=chunk,
                     past_key_values=model_kwargs["encoder_past_key_values"],
                     padding_cache=model_kwargs["padding_cache"],
-                    num_lookahead_tokens=self._streaming_num_lookahead_tokens,  # noqa: leading-underscore  # Required compatibility name
+                    num_lookahead_tokens=self._streaming_num_lookahead_tokens,
                     use_cache=True,
                     output_attention_mask=False,
                 )
@@ -93,16 +91,14 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
                 model_kwargs["encoder_valid_lengths"] = (
                     model_kwargs["encoder_valid_lengths"] + pooler.shape[1]
                 )
-        else:
-            pass
 
         # Recompute exhaustion now that the buffer may have grown (drives the inherited EncoderExhaustedCriteria).
-        self._encoder_finished = (  # noqa: leading-underscore  # Required compatibility name
+        self._encoder_finished = (
             model_kwargs["encoder_frame_idxs"] >= model_kwargs["encoder_valid_lengths"]
         )
         return model_kwargs
 
-    def _prepare_generated_length(  # noqa: leading-underscore  # Required compatibility name
+    def _prepare_generated_length(
         self,
         generation_config,
         has_default_max_length,
@@ -116,15 +112,11 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
         if has_default_max_length and generation_config.max_new_tokens is None:
             if getattr(
                 self, "_streaming", False
-            ):  # noqa: leading-underscore  # Required compatibility name
+            ):
                 # Streaming: total audio length is unknown, so the buffer can't be derived from the input.
                 generation_config.max_length = int(1e9)
                 has_default_max_length = False  # prevent super() from overwriting
-            else:
-                pass
-        else:
-            pass
-        return super()._prepare_generated_length(  # noqa: leading-underscore  # Required compatibility name
+        return super()._prepare_generated_length(
             generation_config,
             has_default_max_length,
             has_default_min_length,
@@ -148,11 +140,9 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
         subsampling_factor = self.config.encoder_config.subsampling_factor
         right = (
             self._streaming_num_lookahead_tokens
-        )  # noqa: leading-underscore  # Required compatibility name
+        )
         if is_first_chunk:
             return 1 + subsampling_factor * right
-        else:
-            pass
         return subsampling_factor * (right + 1)
 
     def validate_stream_chunk(self, chunk, is_first_chunk: bool):
@@ -168,16 +158,14 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
             which = "first" if is_first_chunk else "subsequent"
             raise ValueError(
                 f"Streaming {which} chunk has {n_frames} mel frames but num_lookahead_tokens="
-                f"{self._streaming_num_lookahead_tokens} requires exactly {required} "  # noqa: leading-underscore  # Required compatibility name
+                f"{self._streaming_num_lookahead_tokens} requires exactly {required} "
                 f"(first chunk = 1 + subsampling_factor * right, subsequent = subsampling_factor * "
                 f"(right + 1)). Pad the final chunk to the required length if needed."
             )
-        else:
-            pass
 
     def _prepare_model_inputs(
         self, inputs=None, bos_token_id=None, model_kwargs=None
-    ):  # noqa: leading-underscore  # Required compatibility name
+    ):
         input_features = (
             inputs if inputs is not None else (model_kwargs or {}).get("input_features")
         )
@@ -197,15 +185,13 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
             model_kwargs.pop("input_features", None)
             model_kwargs["input_features_generator"] = generator
             return first_chunk, "input_features", model_kwargs
-        else:
-            pass
 
         # Offline: encode the full mel spectrogram up front. Delegate to Parakeet's shared implementation.
         return super()._prepare_model_inputs(
             inputs, bos_token_id, model_kwargs
-        )  # noqa: leading-underscore  # Required compatibility name
+        )
 
-    def _prepare_encoder_decoder_kwargs_for_generation(  # noqa: leading-underscore  # Required compatibility name
+    def _prepare_encoder_decoder_kwargs_for_generation(
         self, inputs_tensor, model_kwargs, model_input_name, generation_config
     ):
         from .modeling_nemotron_asr_streaming import (
@@ -214,12 +200,10 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
 
         if not getattr(
             self, "_streaming", False
-        ):  # noqa: leading-underscore  # Required compatibility name
-            return super()._prepare_encoder_decoder_kwargs_for_generation(  # noqa: leading-underscore  # Required compatibility name
+        ):
+            return super()._prepare_encoder_decoder_kwargs_for_generation(
                 inputs_tensor, model_kwargs, model_input_name, generation_config
             )
-        else:
-            pass
 
         first_chunk = inputs_tensor
         batch_size = first_chunk.shape[0]
@@ -228,7 +212,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
             decoder_input_ids=first_chunk.new_full(
                 (batch_size, 1), self.config.blank_token_id, dtype=torch.long
             ),
-            num_lookahead_tokens=self._streaming_num_lookahead_tokens,  # noqa: leading-underscore  # Required compatibility name
+            num_lookahead_tokens=self._streaming_num_lookahead_tokens,
             use_cache=True,
             output_attention_mask=False,
         )
@@ -249,7 +233,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
         )
         return model_kwargs
 
-    def _prepare_cache_for_generation(  # noqa: leading-underscore  # Required compatibility name
+    def _prepare_cache_for_generation(
         self, generation_config, model_kwargs, *args, **kwargs
     ):
         model_kwargs["decoder_cache"] = NemotronAsrStreamingRNNTDecoderCache(
@@ -286,10 +270,10 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
         input_features = kwargs.get("input_features", inputs)
         self._streaming = isinstance(
             input_features, GeneratorType
-        )  # noqa: leading-underscore  # Required compatibility name
-        if self._streaming:  # noqa: leading-underscore  # Required compatibility name
+        )
+        if self._streaming:
             self._stream_exhausted = (
-                False  # noqa: leading-underscore  # Required compatibility name
+                False
             )
             num_lookahead_tokens = kwargs.pop("num_lookahead_tokens", None)
             if num_lookahead_tokens is None:
@@ -299,11 +283,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
                     "used to size the chunks (e.g. `processor.set_num_lookahead_tokens(...)`, then pass the same "
                     "`num_lookahead_tokens=...` here)."
                 )
-            else:
-                pass
-            self._streaming_num_lookahead_tokens = num_lookahead_tokens  # noqa: leading-underscore  # Required compatibility name
-        else:
-            pass
+            self._streaming_num_lookahead_tokens = num_lookahead_tokens
         try:
             # note (Li Gang): Parakeet's generate() runs the decoding loop and assembles sequences + per-step durations.
             # The external PCM batching path in model_runner.py mirrors the inherited
@@ -319,13 +299,9 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
             ):
                 if hasattr(self, attr):
                     delattr(self, attr)
-                else:
-                    pass
 
         if isinstance(outputs, ParakeetRNNTGenerateOutput):
             return NemotronAsrStreamingGenerateOutput(
                 sequences=outputs.sequences, durations=outputs.durations
             )
-        else:
-            pass
         return NemotronAsrStreamingGenerateOutput(sequences=outputs)

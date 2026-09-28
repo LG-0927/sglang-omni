@@ -14,25 +14,23 @@ from transformers.generation import GenerationMixin
 
 from sglang_omni.models.nemotron3_5_asr.cache import NemotronBatchAttentionCache
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
-from sglang_omni.models.nemotron3_5_asr.hf_compat import (
+from sglang_omni.models.nemotron3_5_asr.model_runner import (
+    Nemotron3_5ASRModelRunner,
+    Nemotron3_5ASRPreparedChunk,
+)
+from sglang_omni.vendor.nemotron3_5_asr import (
     Nemotron3_5AsrConfig,
     Nemotron3_5AsrForRNNT,
     Nemotron3_5AsrProcessor,
     NemotronAsrStreamingEncoderModelOutput,
     NemotronAsrStreamingFeatureExtractor,
-)
-from sglang_omni.models.nemotron3_5_asr.hf_compat import (
     processing_nemotron3_5_asr as processing,
 )
-from sglang_omni.models.nemotron3_5_asr.hf_compat.configuration_nemotron_asr_streaming import (
+from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron_asr_streaming import (
     NemotronAsrStreamingEncoderConfig,
 )
-from sglang_omni.models.nemotron3_5_asr.hf_compat.generation_parakeet import (
+from sglang_omni.vendor.nemotron3_5_asr.generation_parakeet import (
     ParakeetRNNTGenerationMixin,
-)
-from sglang_omni.models.nemotron3_5_asr.model_runner import (
-    Nemotron3_5ASRModelRunner,
-    Nemotron3_5ASRPreparedChunk,
 )
 
 

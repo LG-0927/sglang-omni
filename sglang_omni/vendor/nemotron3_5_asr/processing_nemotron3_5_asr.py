@@ -33,8 +33,6 @@ from .feature_extraction_nemotron_asr_streaming import (
 
 if is_torch_available():
     import torch
-else:
-    pass
 
 
 logger = logging.get_logger(__name__)
@@ -190,7 +188,7 @@ DEFAULT_PROMPT_DICTIONARY = {
 @auto_docstring
 class Nemotron3_5AsrProcessor(ProcessorMixin):
     @classmethod
-    def _get_arguments_from_pretrained(  # noqa: leading-underscore  # Required compatibility name
+    def _get_arguments_from_pretrained(
         cls,
         pretrained_model_name_or_path,
         processor_dict=None,
@@ -212,8 +210,6 @@ class Nemotron3_5AsrProcessor(ProcessorMixin):
                 "Nemotron3_5AsrProcessor requires a nested "
                 "`feature_extractor` object in processor_config.json"
             )
-        else:
-            pass
 
         subfolder = kwargs.pop("subfolder", "")
         feature_extractor = NemotronAsrStreamingFeatureExtractor(
@@ -322,12 +318,10 @@ class Nemotron3_5AsrProcessor(ProcessorMixin):
             raise ValueError(
                 "In non-streaming mode (`is_streaming=False`), `is_first_audio_chunk` must be `True`."
             )
-        else:
-            pass
 
         audio = make_list_of_audio(audio)
 
-        output_kwargs = self._merge_kwargs(  # noqa: leading-underscore  # Required compatibility name
+        output_kwargs = self._merge_kwargs(
             Nemotron3_5AsrProcessorKwargs,
             tokenizer_init_kwargs=self.tokenizer.init_kwargs,
             **kwargs,
@@ -344,8 +338,6 @@ class Nemotron3_5AsrProcessor(ProcessorMixin):
                 f"processor ({output_kwargs['audio_kwargs']['sampling_rate']}). Please resample the audio to "
                 f"the expected sampling rate."
             )
-        else:
-            pass
 
         if audio is not None:
             # `center=True` for the first/offline chunk, `center=False` for subsequent streaming chunks.
@@ -354,28 +346,20 @@ class Nemotron3_5AsrProcessor(ProcessorMixin):
                 center=bool(is_first_audio_chunk),
                 **output_kwargs["audio_kwargs"],
             )
-        else:
-            pass
         if text is not None:
             encodings = self.tokenizer(text, **output_kwargs["text_kwargs"])
-        else:
-            pass
 
         inputs["num_lookahead_tokens"] = self.default_num_lookahead_tokens
         inputs["prompt_ids"] = self.resolve_prompt_ids(language, len(audio))
 
         if text is None:
             return inputs
-        else:
-            pass
 
         inputs["labels"] = encodings["input_ids"]
         # Prepend the blank token to labels to form decoder_input_ids: the RNN-T decoder expects
         # [blank, label_0, ..., label_{U-1}] as input.
         if isinstance(text, str):
             text = [text]
-        else:
-            pass
         decoder_text = [self.blank_token + t for t in text]
         decoder_encodings = self.tokenizer(decoder_text, **output_kwargs["text_kwargs"])
         inputs["decoder_input_ids"] = decoder_encodings["input_ids"]
@@ -399,8 +383,6 @@ class Nemotron3_5AsrProcessor(ProcessorMixin):
         """Decode RNN-T text without token-level timestamp post-processing."""
         if durations is not None:
             raise ValueError("Token-level timestamps are not supported")
-        else:
-            pass
         # RNN-T keeps repeated tokens (each is a separate emission), so consecutive identical tokens are not merged.
         kwargs.setdefault("group_tokens", False)
         return self.tokenizer.decode(*args, **kwargs)
@@ -422,13 +404,11 @@ class Nemotron3_5AsrProcessor(ProcessorMixin):
                 f"`num_lookahead_tokens={num_lookahead_tokens}` is not supported by this model. Supported "
                 f"values: {list(self.supported_num_lookahead_tokens)}."
             )
-        else:
-            pass
         self.default_num_lookahead_tokens = num_lookahead_tokens
 
     @property
     def subsampling_factor(self) -> int:
-        output_kwargs = self._merge_kwargs(  # noqa: leading-underscore  # Required compatibility name
+        output_kwargs = self._merge_kwargs(
             Nemotron3_5AsrProcessorKwargs,
             tokenizer_init_kwargs=self.tokenizer.init_kwargs,
         )
@@ -511,22 +491,16 @@ class Nemotron3_5AsrProcessor(ProcessorMixin):
     ) -> "torch.LongTensor":
         if isinstance(language, str):
             language = [language] * batch_size
-        else:
-            pass
         if len(language) != batch_size:
             raise ValueError(
                 f"Received {len(language)} `language` entries for {batch_size} audio input(s)."
             )
-        else:
-            pass
         prompt_ids = []
         for lang in language:
             if lang not in self.prompt_dictionary:
                 raise ValueError(
                     f"Unknown `language={lang!r}`. Supported values: {sorted(self.prompt_dictionary)}."
                 )
-            else:
-                pass
             prompt_ids.append(self.prompt_dictionary[lang])
         return torch.tensor(prompt_ids, dtype=torch.long)
 

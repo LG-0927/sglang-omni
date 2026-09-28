@@ -30,11 +30,11 @@ class ParakeetRNNTGenerationMixin(TransformersParakeetRNNTGenerationMixin):
 
     def _prepare_model_inputs(
         self, *args, **kwargs
-    ):  # noqa: leading-underscore  # Required compatibility name
+    ):
         # Call GenerationMixin directly to avoid running the pinned 5.12
         # Parakeet override before we can forward cache-aware encoder kwargs.
         inputs, input_name, model_kwargs = (
-            GenerationMixin._prepare_model_inputs(  # noqa: leading-underscore  # Required compatibility name
+            GenerationMixin._prepare_model_inputs(
                 self, *args, **kwargs
             )
         )

@@ -12,7 +12,7 @@ from sglang_omni.models.nemotron3_5_asr.cache import (
     NemotronBatchAttentionCache,
     NemotronBatchPaddingCache,
 )
-from sglang_omni.models.nemotron3_5_asr.hf_compat import (
+from sglang_omni.vendor.nemotron3_5_asr import (
     Nemotron3_5AsrForRNNT,
     NemotronAsrStreamingEncoderCausalConvPaddingCache,
 )

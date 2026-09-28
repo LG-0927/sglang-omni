@@ -69,9 +69,7 @@ class NemotronAsrStreamingEncoderCausalConv1dCacheLayer:
         if not is_torchdynamo_compiling():
             torch._dynamo.mark_static_address(
                 self.cache
-            )  # noqa: leading-underscore  # Required compatibility name
-        else:
-            pass
+            )
 
         self.is_initialized = True
 
@@ -82,8 +80,6 @@ class NemotronAsrStreamingEncoderCausalConv1dCacheLayer:
             raise ValueError(
                 "NemotronAsrStreamingEncoderCausalConv1dCacheLayer is not initialized. Make sure to provide conv_module to the update method."
             )
-        else:
-            pass
 
         # get the padding states
         if self.left_pad > 0:
@@ -126,9 +122,7 @@ class NemotronAsrStreamingEncoderCausalConv2dCacheLayer:
         if not is_torchdynamo_compiling():
             torch._dynamo.mark_static_address(
                 self.cache
-            )  # noqa: leading-underscore  # Required compatibility name
-        else:
-            pass
+            )
 
         self.is_first_chunk = True
         self.is_initialized = True
@@ -140,8 +134,6 @@ class NemotronAsrStreamingEncoderCausalConv2dCacheLayer:
             raise ValueError(
                 "NemotronAsrStreamingEncoderCausalConv2dCacheLayer is not initialized. Make sure to provide conv_module to the update method."
             )
-        else:
-            pass
 
         # new cache: the last `left_pad` time frames (dim 2), keeping the old cache tail on shortfall
         shortfall = max(0, self.left_pad - hidden_states.shape[2])
@@ -158,8 +150,6 @@ class NemotronAsrStreamingEncoderCausalConv2dCacheLayer:
             current_cache = torch.cat(
                 [current_cache.new_zeros(init_shape), current_cache], dim=2
             )
-        else:
-            pass
         self.is_first_chunk = False
 
         self.cache.copy_(new_cache)
@@ -184,8 +174,6 @@ class NemotronAsrStreamingEncoderCausalConvPaddingCache:
                 raise NotImplementedError(
                     f"Unsupported conv_module type: {type(conv_module)}"
                 )
-        else:
-            pass
 
         padding_states = self.layers[cache_key].update(hidden_states, conv_module)
         return torch.cat([padding_states, hidden_states], dim=2)
@@ -210,9 +198,7 @@ class NemotronAsrStreamingConv1dCacheLayer:
         if not is_torchdynamo_compiling():
             torch._dynamo.mark_static_address(
                 self.cache
-            )  # noqa: leading-underscore  # Required compatibility name
-        else:
-            pass
+            )
 
         self.is_initialized = True
 
@@ -223,8 +209,6 @@ class NemotronAsrStreamingConv1dCacheLayer:
             raise ValueError(
                 "NemotronAsrStreamingConv1dCacheLayer is not initialized. Make sure to provide conv_module to the update method."
             )
-        else:
-            pass
 
         # get the padding states
         if self.left_pad > 0:
@@ -257,8 +241,6 @@ class NemotronAsrStreamingConv1dPaddingCache:
     def update(self, hidden_states, cache_key, conv_module):
         if cache_key not in self.layers:
             self.layers[cache_key] = NemotronAsrStreamingConv1dCacheLayer()
-        else:
-            pass
 
         padding_states = self.layers[cache_key].update(hidden_states, conv_module)
         padded_hidden_states = torch.cat([padding_states, hidden_states], dim=-1)
@@ -352,8 +334,6 @@ class NemotronAsrStreamingEncoderCausalConv2D(nn.Conv2d):
         # full causal padding `(kernel - 1, stride - 1)` on the time axis.
         if input_lengths is None:
             return None
-        else:
-            pass
         left, right = (self.left_pad, 0) if streaming else self.time_pad
         return (input_lengths + left + right - self.kernel_size[0]) // self.stride[
             0
@@ -441,8 +421,6 @@ class NemotronAsrStreamingEncoderRelPositionalEncoding(nn.Module):
                 f"Sequence Length: {seq_length} has to be less or equal than "
                 f"config.max_position_embeddings {self.max_position_embeddings}."
             )
-        else:
-            pass
         position_ids = torch.arange(
             seq_length - 1, -seq_length, -1, device=hidden_states.device
         )
@@ -552,8 +530,6 @@ class NemotronAsrStreamingEncoderConvolutionModule(nn.Module):
         # `all_masked_rows` is derived from the attention mask once in the encoder and shared across layers.
         if all_masked_rows is not None:
             hidden_states = hidden_states.masked_fill(all_masked_rows, 0.0)
-        else:
-            pass
 
         # Causal depthwise conv: left context from `padding_cache` when streaming, else left-padded.
         hidden_states = self.depthwise_conv(hidden_states, padding_cache=padding_cache)
@@ -611,8 +587,6 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    else:
-        pass
     hidden_states = hidden_states[:, :, None, :, :].expand(
         batch, num_key_value_heads, n_rep, slen, head_dim
     )
@@ -635,8 +609,6 @@ def eager_attention_forward(
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     if attention_mask is not None:
         attn_weights = attn_weights + attention_mask
-    else:
-        pass
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
         query.dtype
@@ -725,14 +697,12 @@ class NemotronAsrStreamingEncoderAttention(nn.Module):
             key_states, value_states = past_key_values.update(
                 key_states, value_states, self.layer_idx
             )
-        else:
-            pass
 
         total_key_length = key_states.shape[2]
 
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
             self.config._attn_implementation,
-            eager_attention_forward,  # noqa: leading-underscore  # Required compatibility name
+            eager_attention_forward,
         )
 
         query_states_with_bias_u = query_states + self.bias_u.view(
@@ -760,8 +730,6 @@ class NemotronAsrStreamingEncoderAttention(nn.Module):
             matrix_bd = matrix_bd.masked_fill_(
                 attention_mask.logical_not(), float("-inf")
             )
-        else:
-            pass
 
         # will compute matrix_ac - terms (a) and (c) - and add matrix_bd
         attn_output, attn_weights = attention_interface(
@@ -798,8 +766,6 @@ def mask_subsampled_frames(
     """Zero out time frames beyond each sequence's valid length so they don't leak into the next conv."""
     if lengths is None:
         return hidden_states
-    else:
-        pass
     time = torch.arange(hidden_states.shape[2], device=hidden_states.device)
     return hidden_states * (time < lengths[:, None])[:, None, :, None]
 
@@ -999,10 +965,10 @@ class NemotronAsrStreamingPreTrainedModel(PreTrainedModel):
     @torch.no_grad()
     def _init_weights(
         self, module
-    ):  # noqa: leading-underscore  # Required compatibility name
+    ):
         super()._init_weights(
             module
-        )  # noqa: leading-underscore  # Required compatibility name
+        )
         std = getattr(self.config, "initializer_range", 0.02)
 
         if isinstance(module, NemotronAsrStreamingEncoderAttention):
@@ -1013,12 +979,10 @@ class NemotronAsrStreamingPreTrainedModel(PreTrainedModel):
                 module.config
             )
             init.copy_(module.inv_freq, buffer_value)
-        else:
-            pass
 
     def _get_subsampling_output_length(
         self, input_lengths: torch.Tensor
-    ):  # noqa: leading-underscore  # Required compatibility name
+    ):
         encoder_config = getattr(self.config, "encoder_config", self.config)
 
         kernel_size = encoder_config.subsampling_conv_kernel_size
@@ -1045,7 +1009,7 @@ class NemotronAsrStreamingPreTrainedModel(PreTrainedModel):
         """
         output_lengths = self._get_subsampling_output_length(
             attention_mask.sum(-1)
-        )  # noqa: leading-underscore  # Required compatibility name
+        )
         # Use target_length if provided, otherwise use max length in batch
         max_length = (
             target_length if target_length is not None else output_lengths.max()
@@ -1155,15 +1119,9 @@ class NemotronAsrStreamingEncoder(NemotronAsrStreamingPreTrainedModel):
         if use_cache:
             if past_key_values is None:
                 past_key_values = DynamicCache(config=self.config)
-            else:
-                pass
 
             if padding_cache is None:
                 padding_cache = NemotronAsrStreamingEncoderCausalConvPaddingCache()
-            else:
-                pass
-        else:
-            pass
 
         inputs_embeds = self.subsampling(
             input_features, attention_mask, padding_cache=padding_cache
@@ -1180,16 +1138,12 @@ class NemotronAsrStreamingEncoder(NemotronAsrStreamingPreTrainedModel):
                 + past_seen_tokens
             )
             position_ids = position_ids.unsqueeze(0)
-        else:
-            pass
 
         output_mask = None
         if attention_mask is not None:
             output_mask = self.get_output_attention_mask(
                 attention_mask, target_length=seq_length
             )
-        else:
-            pass
 
         attention_mask = create_bidirectional_mask(
             config=self.config,
@@ -1208,8 +1162,6 @@ class NemotronAsrStreamingEncoder(NemotronAsrStreamingPreTrainedModel):
                 all_masked_rows = torch.all(~attention_mask, dim=-1)
             else:
                 all_masked_rows = torch.all(attention_mask == 0.0, dim=-1)
-        else:
-            pass
 
         cached_frames = (
             past_key_values.get_mask_sizes(seq_length, 0)[0] - seq_length
@@ -1236,10 +1188,6 @@ class NemotronAsrStreamingEncoder(NemotronAsrStreamingPreTrainedModel):
                 dropout_probability = torch.rand([])
                 if dropout_probability < self.layerdrop:  # skip the layer
                     to_drop = True
-                else:
-                    pass
-            else:
-                pass
 
             if not to_drop:
                 hidden_states = encoder_layer(
@@ -1252,8 +1200,6 @@ class NemotronAsrStreamingEncoder(NemotronAsrStreamingPreTrainedModel):
                     use_cache=use_cache,
                     **kwargs,
                 )
-            else:
-                pass
 
         return NemotronAsrStreamingEncoderModelOutput(
             last_hidden_state=hidden_states,
@@ -1277,8 +1223,6 @@ class NemotronAsrStreamingEncoder(NemotronAsrStreamingPreTrainedModel):
                 f"Consider preparing inputs with [`~NemotronAsrStreamingProcessor.__call__`] which automatically sets "
                 f"this parameter."
             )
-        else:
-            pass
 
         left_context = self.config.sliding_window - 1
         return left_context, num_lookahead_tokens
