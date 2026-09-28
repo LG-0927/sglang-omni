@@ -103,8 +103,13 @@ def test_factory_transcribes_single_and_batched_requests(
             assert str(outputs[name].data) == "model failed"
         else:
             assert outputs[name].data.request_id == name
-    assert [
+    actual_request_ids = [
         request.stage_payload.request_id
-        for request in runner.run_batch.call_args.args[0]
-    ] == [name for name, language in request_languages if language == "auto"]
+        for call in runner.run_batch.call_args_list
+        for request in call.args[0]
+    ]
+    expected_request_ids = [
+        name for name, language in request_languages if language == "auto"
+    ]
+    assert sorted(actual_request_ids) == sorted(expected_request_ids)
     runner.close.assert_called_once()

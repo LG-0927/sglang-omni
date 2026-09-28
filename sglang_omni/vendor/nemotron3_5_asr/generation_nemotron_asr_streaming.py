@@ -47,27 +47,20 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
             outputs, model_kwargs, *args, **kwargs
         )
 
-        if not getattr(
-            self, "_streaming", False
-        ):
+        if not getattr(self, "_streaming", False):
             return model_kwargs
 
         generator = model_kwargs.get("input_features_generator")
-        if (
-            not self._stream_exhausted
-            and bool(
-                (
-                    model_kwargs["encoder_frame_idxs"]
-                    >= model_kwargs["encoder_valid_lengths"]
-                ).all()
-            )
+        if not self._stream_exhausted and bool(
+            (
+                model_kwargs["encoder_frame_idxs"]
+                >= model_kwargs["encoder_valid_lengths"]
+            ).all()
         ):
             try:
                 chunk = next(generator)
             except StopIteration:
-                self._stream_exhausted = (
-                    True
-                )
+                self._stream_exhausted = True
             else:
                 chunk = chunk.to(device=self.device, dtype=self.dtype)
                 self.validate_stream_chunk(chunk, is_first_chunk=False)
@@ -110,9 +103,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
         # When the user hasn't explicitly set max_length/max_new_tokens, size the output buffer. The actual
         # stopping is handled by the encoder-exhaustion stopping criteria; this just sizes the buffer generously.
         if has_default_max_length and generation_config.max_new_tokens is None:
-            if getattr(
-                self, "_streaming", False
-            ):
+            if getattr(self, "_streaming", False):
                 # Streaming: total audio length is unknown, so the buffer can't be derived from the input.
                 generation_config.max_length = int(1e9)
                 has_default_max_length = False  # prevent super() from overwriting
@@ -138,9 +129,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
         e.g. for `num_lookahead_tokens == 6` and `subsampling_factor == 8`: 49 then 56 mel frames.
         """
         subsampling_factor = self.config.encoder_config.subsampling_factor
-        right = (
-            self._streaming_num_lookahead_tokens
-        )
+        right = self._streaming_num_lookahead_tokens
         if is_first_chunk:
             return 1 + subsampling_factor * right
         return subsampling_factor * (right + 1)
@@ -163,9 +152,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
                 f"(right + 1)). Pad the final chunk to the required length if needed."
             )
 
-    def _prepare_model_inputs(
-        self, inputs=None, bos_token_id=None, model_kwargs=None
-    ):
+    def _prepare_model_inputs(self, inputs=None, bos_token_id=None, model_kwargs=None):
         input_features = (
             inputs if inputs is not None else (model_kwargs or {}).get("input_features")
         )
@@ -187,9 +174,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
             return first_chunk, "input_features", model_kwargs
 
         # Offline: encode the full mel spectrogram up front. Delegate to Parakeet's shared implementation.
-        return super()._prepare_model_inputs(
-            inputs, bos_token_id, model_kwargs
-        )
+        return super()._prepare_model_inputs(inputs, bos_token_id, model_kwargs)
 
     def _prepare_encoder_decoder_kwargs_for_generation(
         self, inputs_tensor, model_kwargs, model_input_name, generation_config
@@ -198,9 +183,7 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
             NemotronAsrStreamingEncoderModelOutput,
         )
 
-        if not getattr(
-            self, "_streaming", False
-        ):
+        if not getattr(self, "_streaming", False):
             return super()._prepare_encoder_decoder_kwargs_for_generation(
                 inputs_tensor, model_kwargs, model_input_name, generation_config
             )
@@ -268,13 +251,9 @@ class NemotronAsrStreamingGenerationMixin(ParakeetRNNTGenerationMixin):
 
     def generate(self, inputs=None, generation_config=None, **kwargs):
         input_features = kwargs.get("input_features", inputs)
-        self._streaming = isinstance(
-            input_features, GeneratorType
-        )
+        self._streaming = isinstance(input_features, GeneratorType)
         if self._streaming:
-            self._stream_exhausted = (
-                False
-            )
+            self._stream_exhausted = False
             num_lookahead_tokens = kwargs.pop("num_lookahead_tokens", None)
             if num_lookahead_tokens is None:
                 raise ValueError(

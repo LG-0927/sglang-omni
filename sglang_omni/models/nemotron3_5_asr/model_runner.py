@@ -20,12 +20,6 @@ from sglang_omni.models.nemotron3_5_asr.decoder import (
     decode_streaming_batch,
 )
 from sglang_omni.models.nemotron3_5_asr.encoder import encode_streaming_batch
-from sglang_omni.vendor.nemotron3_5_asr import (
-    Nemotron3_5AsrConfig,
-    Nemotron3_5AsrForRNNT,
-    Nemotron3_5AsrProcessor,
-    Nemotron3_5AsrRNNTDecoderCache,
-)
 from sglang_omni.models.nemotron3_5_asr.request_builders import (
     NEMOTRON_ASR_SAMPLE_RATE,
     Nemotron3_5ASRRequest,
@@ -38,6 +32,12 @@ from sglang_omni.models.nemotron3_5_asr.text import (
 from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.proto import StagePayload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.vendor.nemotron3_5_asr import (
+    Nemotron3_5AsrConfig,
+    Nemotron3_5AsrForRNNT,
+    Nemotron3_5AsrProcessor,
+    Nemotron3_5AsrRNNTDecoderCache,
+)
 
 
 @dataclass(slots=True)
@@ -116,8 +116,16 @@ class Nemotron3_5ASRModelRunner:
     def streaming_state_budget_bytes(self) -> int:
         # note (Li Gang): Reserve cache growth before creating a session, including convolution state.
         config = self.model.config.encoder_config
-        cache_frames = config.sliding_window + self.processor.num_mel_frames_per_audio_chunk + 1
-        attention_bytes = 2 * config.num_hidden_layers * config.hidden_size * cache_frames * self.dtype.itemsize
+        cache_frames = (
+            config.sliding_window + self.processor.num_mel_frames_per_audio_chunk + 1
+        )
+        attention_bytes = (
+            2
+            * config.num_hidden_layers
+            * config.hidden_size
+            * cache_frames
+            * self.dtype.itemsize
+        )
         return attention_bytes + 16 * 1024 * 1024
 
     def new_streaming_decode_state(self) -> Nemotron3_5ASRDecodeState:
@@ -222,8 +230,11 @@ class Nemotron3_5ASRModelRunner:
                 languages.append(language)
                 errors.append(None)
         return Nemotron3_5ASRStreamingBatchResult(
-            elapsed_s=elapsed_s, raw_texts=raw_texts, clean_texts=clean_texts,
-            languages=languages, errors=errors,
+            elapsed_s=elapsed_s,
+            raw_texts=raw_texts,
+            clean_texts=clean_texts,
+            languages=languages,
+            errors=errors,
         )
 
     def generate_compatible_batch(

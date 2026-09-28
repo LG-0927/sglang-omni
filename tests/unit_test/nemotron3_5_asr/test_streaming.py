@@ -11,10 +11,6 @@ import torch
 from transformers.cache_utils import DynamicCache
 
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
-from sglang_omni.vendor.nemotron3_5_asr import (
-    Nemotron3_5AsrConfig,
-    Nemotron3_5AsrRNNTDecoderCache,
-)
 from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
@@ -26,6 +22,10 @@ from sglang_omni.models.nemotron3_5_asr.streaming import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.vendor.nemotron3_5_asr import (
+    Nemotron3_5AsrConfig,
+    Nemotron3_5AsrRNNTDecoderCache,
+)
 
 LOOKAHEAD_3 = Nemotron3_5ASRStreamingChunkSpec(
     sample_rate=16000,

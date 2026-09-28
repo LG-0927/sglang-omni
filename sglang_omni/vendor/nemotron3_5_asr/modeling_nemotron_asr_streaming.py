@@ -67,9 +67,7 @@ class NemotronAsrStreamingEncoderCausalConv1dCacheLayer:
         )
 
         if not is_torchdynamo_compiling():
-            torch._dynamo.mark_static_address(
-                self.cache
-            )
+            torch._dynamo.mark_static_address(self.cache)
 
         self.is_initialized = True
 
@@ -120,9 +118,7 @@ class NemotronAsrStreamingEncoderCausalConv2dCacheLayer:
         )
 
         if not is_torchdynamo_compiling():
-            torch._dynamo.mark_static_address(
-                self.cache
-            )
+            torch._dynamo.mark_static_address(self.cache)
 
         self.is_first_chunk = True
         self.is_initialized = True
@@ -196,9 +192,7 @@ class NemotronAsrStreamingConv1dCacheLayer:
         )
 
         if not is_torchdynamo_compiling():
-            torch._dynamo.mark_static_address(
-                self.cache
-            )
+            torch._dynamo.mark_static_address(self.cache)
 
         self.is_initialized = True
 
@@ -963,12 +957,8 @@ class NemotronAsrStreamingPreTrainedModel(PreTrainedModel):
     }
 
     @torch.no_grad()
-    def _init_weights(
-        self, module
-    ):
-        super()._init_weights(
-            module
-        )
+    def _init_weights(self, module):
+        super()._init_weights(module)
         std = getattr(self.config, "initializer_range", 0.02)
 
         if isinstance(module, NemotronAsrStreamingEncoderAttention):
@@ -980,9 +970,7 @@ class NemotronAsrStreamingPreTrainedModel(PreTrainedModel):
             )
             init.copy_(module.inv_freq, buffer_value)
 
-    def _get_subsampling_output_length(
-        self, input_lengths: torch.Tensor
-    ):
+    def _get_subsampling_output_length(self, input_lengths: torch.Tensor):
         encoder_config = getattr(self.config, "encoder_config", self.config)
 
         kernel_size = encoder_config.subsampling_conv_kernel_size
@@ -1007,9 +995,7 @@ class NemotronAsrStreamingPreTrainedModel(PreTrainedModel):
         Convert the input attention mask to its subsampled form. `target_length` sets the desired output length, useful
         when the attention mask length differs from `sum(-1).max()` (i.e., when the longest sequence in the batch is padded)
         """
-        output_lengths = self._get_subsampling_output_length(
-            attention_mask.sum(-1)
-        )
+        output_lengths = self._get_subsampling_output_length(attention_mask.sum(-1))
         # Use target_length if provided, otherwise use max length in batch
         max_length = (
             target_length if target_length is not None else output_lengths.max()

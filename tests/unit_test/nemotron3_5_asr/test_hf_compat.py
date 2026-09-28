@@ -24,8 +24,8 @@ from sglang_omni.vendor.nemotron3_5_asr import (
     Nemotron3_5AsrProcessor,
     NemotronAsrStreamingEncoderModelOutput,
     NemotronAsrStreamingFeatureExtractor,
-    processing_nemotron3_5_asr as processing,
 )
+from sglang_omni.vendor.nemotron3_5_asr import processing_nemotron3_5_asr as processing
 from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron_asr_streaming import (
     NemotronAsrStreamingEncoderConfig,
 )
@@ -337,7 +337,9 @@ def test_parakeet_compat_forwards_cache_aware_encoder_kwargs(monkeypatch) -> Non
                 last_hidden_state=torch.zeros(2, 3, 4),
             )
 
-    _, input_name, prepared = FakeModel()._prepare_model_inputs()
+    _, input_name, prepared = (
+        FakeModel()._prepare_model_inputs()
+    )  # noqa: leading-underscore  # Required Transformers hook
 
     assert input_name == "input_features"
     assert calls == [

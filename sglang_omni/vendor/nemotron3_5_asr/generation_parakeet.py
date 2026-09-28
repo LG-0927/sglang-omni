@@ -28,15 +28,11 @@ from transformers.models.parakeet.generation_parakeet import (
 class ParakeetRNNTGenerationMixin(TransformersParakeetRNNTGenerationMixin):
     """Forward Nemotron streaming kwargs added by Transformers 5.13."""
 
-    def _prepare_model_inputs(
-        self, *args, **kwargs
-    ):
+    def _prepare_model_inputs(self, *args, **kwargs):
         # Call GenerationMixin directly to avoid running the pinned 5.12
         # Parakeet override before we can forward cache-aware encoder kwargs.
-        inputs, input_name, model_kwargs = (
-            GenerationMixin._prepare_model_inputs(
-                self, *args, **kwargs
-            )
+        inputs, input_name, model_kwargs = GenerationMixin._prepare_model_inputs(
+            self, *args, **kwargs
         )
         explicit = {"input_features", "attention_mask", "output_attention_mask"}
         irrelevant_prefix = (
