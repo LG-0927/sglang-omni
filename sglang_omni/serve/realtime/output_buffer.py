@@ -29,6 +29,10 @@ def envelope_size_bytes(envelope: Envelope) -> int:
     return len(repr(envelope).encode())
 
 
+class OutputBufferClosed(RuntimeError):
+    """Normal output is closed; terminal events remain deliverable."""
+
+
 @dataclass(kw_only=True)
 class ResponseState:
     output_modalities: tuple[str, ...]
@@ -49,6 +53,9 @@ class OutputBuffer:
         self.queued_envelopes: deque[tuple[Envelope, int]] = deque()
         self.queued_bytes = 0
         self.output_ready = asyncio.Event()
+        self.capacity_available = asyncio.Event()
+        self.emit_lock = asyncio.Lock()
+        self.is_closed = False
         self.next_chunk_index = 0
         self.responses: dict[str, ResponseState] = {}
 
@@ -57,15 +64,23 @@ class OutputBuffer:
         self.queued_bytes += size_bytes
         self.output_ready.set()
 
-    def enqueue(self, envelope: Envelope) -> None:
+    async def wait_for_capacity(self, envelope: Envelope) -> int:
+        """Wait for space; the caller must enqueue before its next await."""
         size_bytes = envelope_size_bytes(envelope)
-        if (
+        if size_bytes > self.limits.max_output_bytes:
+            raise RuntimeError("outbound event exceeds byte budget")
+        while not self.is_closed and (
             len(self.queued_envelopes) >= self.limits.max_output_events
             or self.queued_bytes + size_bytes > self.limits.max_output_bytes
         ):
-            raise RuntimeError("outbound event budget exhausted")
-        else:
-            pass
+            self.capacity_available.clear()
+            await self.capacity_available.wait()
+        if self.is_closed:
+            raise OutputBufferClosed("output buffer is closed")
+        return size_bytes
+
+    async def enqueue(self, envelope: Envelope) -> None:
+        size_bytes = await self.wait_for_capacity(envelope)
         self.append_unbounded(envelope, size_bytes)
 
     def dequeue(self) -> Envelope | None:
@@ -74,78 +89,93 @@ class OutputBuffer:
         else:
             envelope, size_bytes = self.queued_envelopes.popleft()
             self.queued_bytes -= size_bytes
+            self.capacity_available.set()
             return envelope
 
     def clear(self) -> None:
         self.queued_envelopes.clear()
         self.queued_bytes = 0
+        self.capacity_available.set()
 
-    def emit(
+    def close(self) -> None:
+        self.is_closed = True
+        self.capacity_available.set()
+
+    async def emit(
         self,
         event: OutputEvent,
         unit: Unit | None,
         output_modalities: tuple[str, ...],
     ) -> None:
-        response_id = event.response_id if isinstance(event, ResponseEvent) else None
-        # Note (Junnan Li): Keep each response's negotiated modalities across hot updates.
-        response_state = (
-            self.responses.get(response_id) if response_id is not None else None
-        )
-        modalities = (
-            response_state.output_modalities if response_state is not None else None
-        ) or output_modalities
-        if isinstance(event, (AudioDelta, AudioFinished)) and "audio" not in modalities:
-            return
-        elif isinstance(event, ResponseFinished) and "audio" not in modalities:
-            event = replace(event, has_audio=False)
-        else:
-            pass
-        if isinstance(event, ResponseStarted):
-            self.start_response(event.response_id, modalities)
-        elif isinstance(
-            event,
-            (TextDelta, TextFinished, AudioDelta, AudioFinished, ResponseFinished),
-        ):
-            response_state = self.responses.get(event.response_id)
-            if response_state is None:
-                raise RuntimeError("response output precedes creation")
-            elif response_state.is_terminal:
-                return
-            elif response_state.item_id and event.item_id != response_state.item_id:
-                raise RuntimeError("only one message item per response is supported")
-            else:
-                pass
-            response_state.item_id = event.item_id
-            if isinstance(event, (TextDelta, TextFinished)):
-                response_text = (
-                    response_state.text + event.text
-                    if isinstance(event, TextDelta)
-                    else event.text
-                )
-                if len(response_text) > self.limits.max_history_chars:
-                    raise ContextLimitError("response text context limit")
-                else:
-                    pass
-                response_state.text = response_text
-            elif isinstance(event, AudioDelta) and len(event.pcm) % (
-                PCM16_BYTES_PER_SAMPLE
+        async with self.emit_lock:
+            response_id = (
+                event.response_id if isinstance(event, ResponseEvent) else None
+            )
+            # Note (Junnan Li): Keep each response's negotiated modalities across hot updates.
+            response_state = (
+                self.responses.get(response_id) if response_id is not None else None
+            )
+            modalities = (
+                response_state.output_modalities if response_state is not None else None
+            ) or output_modalities
+            if (
+                isinstance(event, (AudioDelta, AudioFinished))
+                and "audio" not in modalities
             ):
-                raise RuntimeError("producer emitted invalid PCM16")
-            elif isinstance(event, ResponseFinished):
-                response_state.is_terminal = True
+                return
+            elif isinstance(event, ResponseFinished) and "audio" not in modalities:
+                event = replace(event, has_audio=False)
             else:
                 pass
-        else:
-            pass
-        self.enqueue(
-            Envelope(
+            envelope = Envelope(
                 event=event,
                 unit=unit,
                 chunk_index=self.next_chunk_index,
                 output_modalities=tuple(modalities),
             )
-        )
-        self.next_chunk_index += 1
+            if isinstance(event, ResponseStarted):
+                size_bytes = await self.wait_for_capacity(envelope)
+                self.start_response(event.response_id, modalities)
+            elif isinstance(
+                event,
+                (TextDelta, TextFinished, AudioDelta, AudioFinished, ResponseFinished),
+            ):
+                response_state = self.responses.get(event.response_id)
+                if response_state is None:
+                    raise RuntimeError("response output precedes creation")
+                elif response_state.is_terminal:
+                    return
+                elif response_state.item_id and event.item_id != response_state.item_id:
+                    raise RuntimeError(
+                        "only one message item per response is supported"
+                    )
+                else:
+                    pass
+                size_bytes = await self.wait_for_capacity(envelope)
+                response_state.item_id = event.item_id
+                if isinstance(event, (TextDelta, TextFinished)):
+                    response_text = (
+                        response_state.text + event.text
+                        if isinstance(event, TextDelta)
+                        else event.text
+                    )
+                    if len(response_text) > self.limits.max_history_chars:
+                        raise ContextLimitError("response text context limit")
+                    else:
+                        pass
+                    response_state.text = response_text
+                elif isinstance(event, AudioDelta) and len(event.pcm) % (
+                    PCM16_BYTES_PER_SAMPLE
+                ):
+                    raise RuntimeError("producer emitted invalid PCM16")
+                elif isinstance(event, ResponseFinished):
+                    response_state.is_terminal = True
+                else:
+                    pass
+            else:
+                size_bytes = await self.wait_for_capacity(envelope)
+            self.append_unbounded(envelope, size_bytes)
+            self.next_chunk_index += 1
 
     def start_response(self, response_id: str, modalities: tuple[str, ...]) -> None:
         if response_id in self.responses:
@@ -232,6 +262,7 @@ class OutputBuffer:
             pass
 
     def enqueue_terminal(self, event: Failure | Closed) -> None:
+        self.close()
         # Note (Junnan Li): Terminal notifications must remain deliverable after media overflow.
         self.queued_envelopes = deque(
             (envelope, size_bytes)

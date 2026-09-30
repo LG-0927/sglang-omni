@@ -24,7 +24,7 @@ from sglang_omni.serve.realtime.control import (
 )
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import OutputEvent, ResponseStatus, TurnFailure
-from sglang_omni.serve.realtime.output_buffer import OutputBuffer
+from sglang_omni.serve.realtime.output_buffer import OutputBuffer, OutputBufferClosed
 from sglang_omni.serve.realtime.schema import (
     GrantedCapabilities,
     SessionConfiguration,
@@ -90,11 +90,11 @@ class SessionRuntime:
     def pending_samples(self) -> int:
         return len(self.pending_pcm) // PCM16_BYTES_PER_SAMPLE
 
-    def notify(self, event: ControlEvent) -> None:
-        self.output_buffer.enqueue(Envelope(event=event, is_control=True))
+    async def notify(self, event: ControlEvent) -> None:
+        await self.output_buffer.enqueue(Envelope(event=event, is_control=True))
 
-    def notify_created(self) -> None:
-        self.notify(Created(self.session_id, self.model, "realtime"))
+    async def notify_created(self) -> None:
+        await self.notify(Created(self.session_id, self.model, "realtime"))
 
     async def outputs(self) -> AsyncIterator[Envelope]:
         while True:
@@ -120,7 +120,10 @@ class SessionRuntime:
                     "output_modalities", self.capabilities.output_modalities
                 )
             )
-            self.output_buffer.emit(event, producing_unit, modalities)
+            try:
+                await self.output_buffer.emit(event, producing_unit, modalities)
+            except OutputBufferClosed:
+                return
 
     def require_open(self) -> None:
         if self.state != "OPEN":
@@ -168,7 +171,7 @@ class SessionRuntime:
             else:
                 pass
             self.config, self.granted = candidate, granted
-            self.notify(
+            await self.notify(
                 Updated(
                     self.session_id,
                     self.model,
@@ -213,16 +216,19 @@ class SessionRuntime:
                 )
             else:
                 pass
-            self.pending_pcm.extend(pcm)
-            self.accepted_samples += len(pcm) // PCM16_BYTES_PER_SAMPLE
-            self.next_append_sequence += 1
-            self.notify(
+            accepted_samples = (
+                self.accepted_samples + len(pcm) // PCM16_BYTES_PER_SAMPLE
+            )
+            await self.notify(
                 Accepted(
                     sequence,
-                    self.capabilities.input_duration_ms(self.accepted_samples),
+                    self.capabilities.input_duration_ms(accepted_samples),
                     event_id,
                 )
             )
+            self.pending_pcm.extend(pcm)
+            self.accepted_samples = accepted_samples
+            self.next_append_sequence += 1
             self.input_ready.set()
 
     async def clear(self, event_id: str) -> None:
@@ -232,7 +238,7 @@ class SessionRuntime:
             cleared_samples = self.pending_samples + await self.adapter.clear()
             self.pending_pcm.clear()
             self.discarded_samples += cleared_samples
-            self.notify(
+            await self.notify(
                 Cleared(self.capabilities.input_duration_ms(cleared_samples), event_id)
             )
 
@@ -249,15 +255,15 @@ class SessionRuntime:
                 )
             else:
                 pass
-            self.is_input_ended = True
-            self.end_event_id = event_id
-            self.notify(
+            await self.notify(
                 Ended(
                     self.capabilities.input_duration_ms(self.accepted_samples),
                     self.capabilities.tail_policy,
                     event_id,
                 )
             )
+            self.is_input_ended = True
+            self.end_event_id = event_id
             self.input_ready.set()
 
     def cut_next_unit(self) -> Unit:
@@ -330,7 +336,7 @@ class SessionRuntime:
                 self.consumed_samples += consumed_samples
                 self.discarded_samples += discarded_samples
                 if self.close_task is None:
-                    self.output_buffer.enqueue(
+                    await self.output_buffer.enqueue(
                         Envelope(event=UnitCompleted(unit.unit_id), unit=unit)
                     )
                 else:
@@ -341,7 +347,7 @@ class SessionRuntime:
                     return
                 else:
                     assert self.end_event_id is not None
-                    self.notify(
+                    await self.notify(
                         Drained(
                             self.capabilities.input_duration_ms(self.accepted_samples),
                             self.capabilities.input_duration_ms(self.consumed_samples),
@@ -351,6 +357,8 @@ class SessionRuntime:
                         )
                     )
                     return
+        except OutputBufferClosed:
+            return
         except ProtocolError as exc:
             self.fail(str(exc), exc.code)
         except Exception as exc:
@@ -370,6 +378,7 @@ class SessionRuntime:
 
     async def close(self, reason: str, event_id: str | None = None) -> None:
         if self.close_task is None:
+            self.output_buffer.close()
             self.close_task = asyncio.create_task(self.run_close(reason, event_id))
         else:
             pass

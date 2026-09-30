@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from sglang_omni.serve.realtime.control import ControlEvent, Failure
+from sglang_omni.serve.realtime.output_buffer import OutputBufferClosed
 from sglang_omni.serve.realtime.projection import project_control, project_output
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.schema import (
@@ -35,7 +36,7 @@ class SharedRealtimeSession:
         self.session_id = runtime.session_id
 
     async def run(self) -> None:
-        self.runtime.notify_created()
+        await self.runtime.notify_created()
         reader = asyncio.create_task(self.read())
         sender = asyncio.create_task(self.send())
         is_disconnected = False
@@ -133,9 +134,11 @@ class SharedRealtimeSession:
                 else:
                     pass
                 await self.dispatch(raw_event)
+            except OutputBufferClosed:
+                return False
             except ProtocolError as exc:
                 try:
-                    self.runtime.notify(
+                    await self.runtime.notify(
                         Failure(exc.code, str(exc), False, event_id, exc.param)
                     )
                 except RuntimeError:
