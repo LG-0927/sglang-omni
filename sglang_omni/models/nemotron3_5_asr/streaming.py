@@ -80,11 +80,17 @@ class Nemotron3_5ASRStreamState:
             self.pcm_base_sample = self.total_samples
         else:
             self.pcm_bytes.extend(packet_bytes)
-            self.total_samples = self.pcm_base_sample + len(self.pcm_bytes) // PCM16_BYTES_PER_SAMPLE
+            self.total_samples = (
+                self.pcm_base_sample + len(self.pcm_bytes) // PCM16_BYTES_PER_SAMPLE
+            )
 
     def trim_pcm(self) -> None:
         start, _ = self.next_window_bounds()
-        keep_from = self.total_samples if self.has_reached_decode_limit else min(max(start, 0), self.total_samples)
+        keep_from = (
+            self.total_samples
+            if self.has_reached_decode_limit
+            else min(max(start, 0), self.total_samples)
+        )
         trim_bytes = (keep_from - self.pcm_base_sample) * PCM16_BYTES_PER_SAMPLE
         if trim_bytes > 0:
             self.pcm_bytes = self.pcm_bytes[trim_bytes:]
@@ -143,7 +149,9 @@ class Nemotron3_5ASRStreamState:
         ]
         pcm_samples = np.frombuffer(complete_bytes, dtype="<i2")
         window_pcm = pcm_samples[
-            source_start - self.pcm_base_sample : max(source_start, source_end) - self.pcm_base_sample
+            source_start
+            - self.pcm_base_sample : max(source_start, source_end)
+            - self.pcm_base_sample
         ]
         left_padding = max(-start, 0)
         right_padding = window_samples - left_padding - int(window_pcm.shape[0])
@@ -169,7 +177,6 @@ class Nemotron3_5ASRStreamState:
         self.trim_pcm()
         return window
 
-
     def append_chunk(self, chunk: TimedChunk, max_pcm_bytes: int) -> None:
         if self.is_input_done:
             raise ValueError("Nemotron audio has already ended")
@@ -178,12 +185,16 @@ class Nemotron3_5ASRStreamState:
         elif not isinstance(chunk.payload, bytes) or len(chunk.payload) % 2:
             raise ValueError("Nemotron requires aligned PCM16 bytes")
         elif (
-            not math.isfinite(chunk.t_start_ms) or chunk.t_start_ms < 0
+            not math.isfinite(chunk.t_start_ms)
+            or chunk.t_start_ms < 0
             or not math.isfinite(chunk.duration_ms)
             or abs(chunk.duration_ms - len(chunk.payload) / 32) > 1e-6
         ):
             raise ValueError("Nemotron requires 16 kHz mono PCM16 timing")
-        elif not self.has_reached_decode_limit and len(self.pcm_bytes) + len(chunk.payload) > max_pcm_bytes:
+        elif (
+            not self.has_reached_decode_limit
+            and len(self.pcm_bytes) + len(chunk.payload) > max_pcm_bytes
+        ):
             raise RuntimeError("Nemotron accepted operation exceeds PCM budget")
         else:
             self.append_bytes(chunk.payload)
@@ -199,35 +210,54 @@ class Nemotron3_5ASRStreamState:
                 tensors.extend([layer.keys, layer.values])
             else:
                 pass
-        tensors.extend(layer.cache for layer in self.decode.padding_cache.layers.values())
+        tensors.extend(
+            layer.cache for layer in self.decode.padding_cache.layers.values()
+        )
         decoder = self.decode.decoder_cache
         tensors.extend([decoder.cache, decoder.hidden_state, decoder.cell_state])
-        cache_bytes = sum(tensor.numel() * tensor.element_size() for tensor in tensors if tensor is not None)
+        cache_bytes = sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in tensors
+            if tensor is not None
+        )
         history_bytes = (len(self.decode.tokens) + len(self.decode.durations)) * 48
         text_bytes = (len(self.raw_text) + len(self.clean_text)) * 4
         return ResourceUsage(
             kv_tokens=self.decode.attention_cache.get_seq_length(),
             bytes=cache_bytes + history_bytes + text_bytes + len(self.pcm_bytes),
-            slots={"pcm_bytes": len(self.pcm_bytes), "cache_bytes": cache_bytes,
-                   "history_tokens": len(self.decode.tokens), "reserved_bytes": reservation},
+            slots={
+                "pcm_bytes": len(self.pcm_bytes),
+                "cache_bytes": cache_bytes,
+                "history_tokens": len(self.decode.tokens),
+                "reserved_bytes": reservation,
+            },
         )
 
-    def append_result(self, payload: StagePayload, previous_text: str, first_output: bool) -> AppendResult:
+    def append_result(
+        self, payload: StagePayload, previous_text: str, first_output: bool
+    ) -> AppendResult:
         if self.is_input_done:
             final = build_nemotron3_5_asr_result(
-                payload, raw_text=self.raw_text, requested_language=self.language,
+                payload,
+                raw_text=self.raw_text,
+                requested_language=self.language,
                 duration_s=self.total_samples / self.spec.sample_rate,
                 asr_latency_s=time.perf_counter() - self.request_started_s,
                 model_latency_s=self.model_compute_s,
-                extra_data={"token_ids": list(self.decode.tokens),
-                            "durations": list(self.decode.durations),
-                            "encoder_frames": self.decode.encoder_frames,
-                            "decoder_steps": self.decode.decoder_steps,
-                            "streaming_latency_ms": self.spec.streaming_latency_ms},
+                extra_data={
+                    "token_ids": list(self.decode.tokens),
+                    "durations": list(self.decode.durations),
+                    "encoder_frames": self.decode.encoder_frames,
+                    "decoder_steps": self.decode.decoder_steps,
+                    "streaming_latency_ms": self.spec.streaming_latency_ms,
+                },
             )
         else:
             final = None
         return AppendResult(
-            text=self.clean_text[len(previous_text):], full_text=self.clean_text,
-            is_first_output=first_output, is_final=self.is_input_done, final_payload=final,
+            text=self.clean_text[len(previous_text) :],
+            full_text=self.clean_text,
+            is_first_output=first_output,
+            is_final=self.is_input_done,
+            final_payload=final,
         )

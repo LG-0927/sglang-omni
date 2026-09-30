@@ -50,24 +50,39 @@ def convert_session_output(output: OutputChunk) -> Iterable[OutputEvent]:
             else:
                 pass
             if output.eos:
-                events.extend([
-                    TextFinished(response_id, item_id, full_text),
-                    ResponseFinished(response_id, item_id, full_text, False, "completed", "audio_end"),
-                ])
+                events.extend(
+                    [
+                        TextFinished(response_id, item_id, full_text),
+                        ResponseFinished(
+                            response_id,
+                            item_id,
+                            full_text,
+                            False,
+                            "completed",
+                            "audio_end",
+                        ),
+                    ]
+                )
             else:
                 pass
             return events
 
 
-def create_realtime_deployment(client: Client, *, native_unit_ms: int = 20) -> RealtimeDeployment:
+def create_realtime_deployment(
+    client: Client, *, native_unit_ms: int = 20
+) -> RealtimeDeployment:
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
-            client, stages=["asr"], request_builder=build_session_request,
-            output_converter=convert_session_output, input_sample_rate_hz=16000,
+            client,
+            stages=["asr"],
+            request_builder=build_session_request,
+            output_converter=convert_session_output,
+            input_sample_rate_hz=16000,
             atomic_consumption=True,
         )
 
     return RealtimeDeployment(
         capabilities=Capabilities(native_unit_ms=native_unit_ms),
-        adapter_factory=create_adapter, max_connections=64,
+        adapter_factory=create_adapter,
+        max_connections=64,
     )

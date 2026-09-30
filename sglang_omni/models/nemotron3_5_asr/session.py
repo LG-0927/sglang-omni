@@ -11,7 +11,11 @@ from sglang_omni.models.nemotron3_5_asr.batch_engine import NemotronBatchEngine
 from sglang_omni.models.nemotron3_5_asr.streaming import AppendResult
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
-from sglang_omni.scheduling.session import SessionContext, SessionHooks, SessionScheduler
+from sglang_omni.scheduling.session import (
+    SessionContext,
+    SessionHooks,
+    SessionScheduler,
+)
 
 
 class NemotronSessionHooks(SessionHooks):
@@ -21,20 +25,32 @@ class NemotronSessionHooks(SessionHooks):
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.engine.open(session_identity, request).result()
 
-    def append(self, chunk: TimedChunk, payload: StagePayload, context: SessionContext) -> StagePayload:
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
         try:
-            result = self.engine.append(context.session_identity, chunk, payload, context.cancelled).result()
+            result = self.engine.append(
+                context.session_identity, chunk, payload, context.cancelled
+            ).result()
             assert isinstance(result, AppendResult)
             if context.cancelled.is_set():
                 raise RuntimeError("Nemotron append cancelled")
             elif result.text or result.is_final:
-                context.emit(TimedChunk(
-                    modality="text", t_start_ms=chunk.t_start_ms,
-                    duration_ms=chunk.duration_ms, seq=chunk.seq, format="text",
-                    eos=result.is_final,
-                    payload={"text": result.text, "full_text": result.full_text,
-                             "is_first_output": result.is_first_output},
-                ))
+                context.emit(
+                    TimedChunk(
+                        modality="text",
+                        t_start_ms=chunk.t_start_ms,
+                        duration_ms=chunk.duration_ms,
+                        seq=chunk.seq,
+                        format="text",
+                        eos=result.is_final,
+                        payload={
+                            "text": result.text,
+                            "full_text": result.full_text,
+                            "is_first_output": result.is_first_output,
+                        },
+                    )
+                )
             else:
                 pass
             if result.final_payload is not None:
@@ -54,16 +70,24 @@ class NemotronSessionHooks(SessionHooks):
 
 
 class NemotronSessionScheduler(SessionScheduler):
-    def __init__(self, engine: NemotronBatchEngine, *, max_concurrency: int,
-                 max_open_sessions: int, max_state_bytes: int) -> None:
+    def __init__(
+        self,
+        engine: NemotronBatchEngine,
+        *,
+        max_concurrency: int,
+        max_open_sessions: int,
+        max_state_bytes: int,
+    ) -> None:
         self.engine = engine
         self.offline_cancel_events: dict[str, threading.Event] = {}
         self.offline_lock = threading.Lock()
         self.lifecycle_lock = threading.Lock()
         self.has_started = False
         super().__init__(
-            NemotronSessionHooks(engine), compute_fn=self.compute_offline,
-            max_concurrency=max_concurrency, max_open_sessions=max_open_sessions,
+            NemotronSessionHooks(engine),
+            compute_fn=self.compute_offline,
+            max_concurrency=max_concurrency,
+            max_open_sessions=max_open_sessions,
             max_state_bytes=max_state_bytes,
         )
 
@@ -102,8 +126,11 @@ class NemotronSessionScheduler(SessionScheduler):
                 self.has_started = True
                 self.running = True
         loop = asyncio.new_event_loop()
-        loop.set_default_executor(ThreadPoolExecutor(
-            max_workers=self.max_concurrency + 1, thread_name_prefix="nemotron-hook"))
+        loop.set_default_executor(
+            ThreadPoolExecutor(
+                max_workers=self.max_concurrency + 1, thread_name_prefix="nemotron-hook"
+            )
+        )
         try:
             loop.run_until_complete(self.run_workers(loop))
         finally:

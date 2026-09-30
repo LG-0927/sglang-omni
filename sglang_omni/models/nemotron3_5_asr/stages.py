@@ -27,26 +27,50 @@ def create_nemotron3_5_asr_executor(
     max_history_tokens: int = 16384,
     max_text_bytes: int = 2 * 1024 * 1024,
 ) -> NemotronSessionScheduler:
-    concurrency = max(4, max_batch_size) if session_max_concurrency is None else session_max_concurrency
-    if min(max_batch_size, concurrency, max_open_sessions, max_state_bytes,
-           max_pcm_bytes, max_history_tokens, max_text_bytes) < 1:
-        raise ValueError("Nemotron batch, concurrency and resource budgets must be positive")
+    concurrency = (
+        max(4, max_batch_size)
+        if session_max_concurrency is None
+        else session_max_concurrency
+    )
+    if (
+        min(
+            max_batch_size,
+            concurrency,
+            max_open_sessions,
+            max_state_bytes,
+            max_pcm_bytes,
+            max_history_tokens,
+            max_text_bytes,
+        )
+        < 1
+    ):
+        raise ValueError(
+            "Nemotron batch, concurrency and resource budgets must be positive"
+        )
     elif not math.isfinite(max_batch_wait_ms) or max_batch_wait_ms < 0:
         raise ValueError("max_batch_wait_ms must be finite and non-negative")
     else:
         runner = Nemotron3_5ASRModelRunner(
-            model_path, device=resolve_device_spec(device, gpu_id), dtype=dtype,
+            model_path,
+            device=resolve_device_spec(device, gpu_id),
+            dtype=dtype,
             num_lookahead_tokens=num_lookahead_tokens,
         )
         engine = NemotronBatchEngine(
-            runner, max_batch_size=max_batch_size, max_batch_wait_ms=max_batch_wait_ms,
+            runner,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
             max_pending_tasks=2 * concurrency + max_open_sessions,
-            max_open_sessions=max_open_sessions, max_state_bytes=max_state_bytes,
-            max_pcm_bytes=max_pcm_bytes, max_history_tokens=max_history_tokens,
+            max_open_sessions=max_open_sessions,
+            max_state_bytes=max_state_bytes,
+            max_pcm_bytes=max_pcm_bytes,
+            max_history_tokens=max_history_tokens,
             max_text_bytes=max_text_bytes,
         )
         return NemotronSessionScheduler(
-            engine, max_concurrency=concurrency, max_open_sessions=max_open_sessions,
+            engine,
+            max_concurrency=concurrency,
+            max_open_sessions=max_open_sessions,
             max_state_bytes=max_state_bytes,
         )
 
