@@ -69,6 +69,8 @@ class OutputBuffer:
         size_bytes = envelope_size_bytes(envelope)
         if size_bytes > self.limits.max_output_bytes:
             raise RuntimeError("outbound event exceeds byte budget")
+        else:
+            pass
         while not self.is_closed and (
             len(self.queued_envelopes) >= self.limits.max_output_events
             or self.queued_bytes + size_bytes > self.limits.max_output_bytes
@@ -77,6 +79,8 @@ class OutputBuffer:
             await self.capacity_available.wait()
         if self.is_closed:
             raise OutputBufferClosed("output buffer is closed")
+        else:
+            pass
         return size_bytes
 
     async def enqueue(self, envelope: Envelope) -> None:
