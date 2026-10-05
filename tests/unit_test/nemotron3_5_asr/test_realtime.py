@@ -13,11 +13,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.client import Client
-from sglang_omni.models.nemotron3_5_asr.realtime import create_realtime_deployment
+from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
 from sglang_omni.models.nemotron3_5_asr.session import NemotronSessionScheduler
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.serve.openai_api import create_app
+from sglang_omni.utils.imports import import_string
 from tests.unit_test.nemotron3_5_asr.test_session import make_engine
 from tests.unit_test.nemotron3_5_asr.test_streaming import FakeRunner
 
@@ -40,10 +41,12 @@ def test_websocket_stage_final_drain_and_cleanup(
     ]
     coordinator = Coordinator(completion, abort, "asr", ["asr"])
     client = Client(coordinator)
+    pipeline_config = Nemotron3_5ASRPipelineConfig(model_path="nemotron-test")
+    deployment_factory = import_string(pipeline_config.realtime_deployment_factory)
     app = create_app(
         client,
         model_name="nemotron-test",
-        realtime_deployment=create_realtime_deployment(client),
+        realtime_deployment=deployment_factory(client, pipeline_config),
     )
     owners = []
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sglang_omni.client.client import Client
+from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -69,12 +70,15 @@ def convert_session_output(output: OutputChunk) -> Iterable[OutputEvent]:
 
 
 def create_realtime_deployment(
-    client: Client, *, native_unit_ms: int = 20
+    client: Client,
+    pipeline_config: Nemotron3_5ASRPipelineConfig,
+    *,
+    native_unit_ms: int = 20,
 ) -> RealtimeDeployment:
     def create_adapter() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
-            stages=["asr"],
+            stages=[pipeline_config.entry_stage],
             request_builder=build_session_request,
             output_converter=convert_session_output,
             input_sample_rate_hz=16000,
