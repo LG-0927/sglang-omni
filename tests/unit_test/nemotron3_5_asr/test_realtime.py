@@ -6,10 +6,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.client import Client
@@ -51,7 +53,7 @@ def test_websocket_stage_final_drain_and_cleanup(
     owners = []
 
     @asynccontextmanager
-    async def lifespan(application):
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await coordinator.start()
         stage = construct_stage(
             StageLaunchConfig(
@@ -108,6 +110,8 @@ def test_websocket_stage_final_drain_and_cleanup(
                     "sglang": {"seq": 0},
                 }
             )
+        else:
+            pass
         websocket.send_json({"event_id": "end", "type": "sglang.input_audio.end"})
         events = []
         while not events or events[-1]["type"] != "sglang.input_audio.drained":
@@ -131,4 +135,6 @@ def test_websocket_stage_final_drain_and_cleanup(
     assert not engine.states and not engine.tasks and not engine.thread.is_alive()
     if not sample_count:
         assert not engine.runner.batches
+    else:
+        pass
     assert not coordinator.sessions and not coordinator.requests

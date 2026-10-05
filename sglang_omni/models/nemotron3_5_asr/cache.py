@@ -7,7 +7,7 @@ import torch
 from torch.nn import functional as F
 from transformers.cache_utils import DynamicCache
 
-from sglang_omni.vendor.nemotron3_5_asr import (
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron_asr_streaming import (
     NemotronAsrStreamingEncoderCausalConvPaddingCache,
 )
 
@@ -65,12 +65,14 @@ class NemotronBatchAttentionCache:
         query_positions = seen[:, None] + torch.arange(query_length, device=device)
         chunk_size = right_context + 1
         left_chunks = left_context // chunk_size if left_context >= 0 else 10_000
-        chunk_diff = (
+        chunk_difference = (
             torch.div(query_positions, chunk_size, rounding_mode="trunc")[:, :, None]
             - torch.div(key_positions, chunk_size, rounding_mode="trunc")[:, None, :]
         )
         visible = (columns[None, :] >= left_padding[:, None])[:, None, :]
-        return (visible & (chunk_diff >= 0) & (chunk_diff <= left_chunks))[:, None]
+        return (visible & (chunk_difference >= 0) & (chunk_difference <= left_chunks))[
+            :, None
+        ]
 
 
 class NemotronBatchPaddingCache:

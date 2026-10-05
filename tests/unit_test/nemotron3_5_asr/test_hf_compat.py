@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Compatibility and batch equivalence for the vendored Nemotron model."""
 
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -18,19 +21,27 @@ from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
 )
-from sglang_omni.vendor.nemotron3_5_asr import (
-    Nemotron3_5AsrConfig,
-    Nemotron3_5AsrForRNNT,
-    Nemotron3_5AsrProcessor,
-    NemotronAsrStreamingEncoderModelOutput,
-    NemotronAsrStreamingFeatureExtractor,
-)
 from sglang_omni.vendor.nemotron3_5_asr import processing_nemotron3_5_asr as processing
+from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron3_5_asr import (
+    Nemotron3_5AsrConfig,
+)
 from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron_asr_streaming import (
     NemotronAsrStreamingEncoderConfig,
 )
+from sglang_omni.vendor.nemotron3_5_asr.feature_extraction_nemotron_asr_streaming import (
+    NemotronAsrStreamingFeatureExtractor,
+)
 from sglang_omni.vendor.nemotron3_5_asr.generation_parakeet import (
     ParakeetRNNTGenerationMixin,
+)
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron3_5_asr import (
+    Nemotron3_5AsrForRNNT,
+)
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron_asr_streaming import (
+    NemotronAsrStreamingEncoderModelOutput,
+)
+from sglang_omni.vendor.nemotron3_5_asr.processing_nemotron3_5_asr import (
+    Nemotron3_5AsrProcessor,
 )
 
 
@@ -107,7 +118,7 @@ def test_processor_text_decode_preserves_repeated_tokens() -> None:
     ],
 )
 def test_local_model_preserves_streaming_results_and_caches_when_batched(
-    tmp_path,
+    tmp_path: Path,
     prior_chunks: tuple[int, int],
     frames: int,
     lookahead: int,
@@ -164,11 +175,19 @@ def test_local_model_preserves_streaming_results_and_caches_when_batched(
             runner.model.joint.head.weight.zero_()
             runner.model.joint.head.bias.fill_(-10)
             runner.model.joint.head.bias[config.blank_token_id] = 10
+    else:
+        pass
     runner.device = torch.device("cpu")
     runner.model_lock = threading.Lock()
+
+    def decode_rows(
+        rows: list[torch.Tensor], *, skip_special_tokens: bool
+    ) -> list[str]:
+        return [str(row.tolist()) for row in rows]
+
     runner.processor = SimpleNamespace(
         default_num_lookahead_tokens=lookahead,
-        batch_decode=lambda rows, **kwargs: [str(row.tolist()) for row in rows],
+        batch_decode=decode_rows,
     )
     serial = [runner.new_streaming_decode_state() for _ in range(2)]
     batched = [runner.new_streaming_decode_state() for _ in range(2)]
@@ -277,6 +296,8 @@ def test_batched_attention_preserves_sliding_window_state(batch_size: int) -> No
         order = list(range(batch_size))
         if step % 2:
             order.reverse()
+        else:
+            pass
         keys = torch.stack(
             [torch.full((2, 4, 4), float(1000 * index + step)) for index in order]
         )
@@ -306,7 +327,9 @@ def test_batched_attention_preserves_sliding_window_state(batch_size: int) -> No
         assert len(storage_pointers) == batch_size
 
 
-def test_parakeet_compat_forwards_cache_aware_encoder_kwargs(monkeypatch) -> None:
+def test_parakeet_compat_forwards_cache_aware_encoder_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
 
     input_features = torch.zeros(2, 5, 4)
     attention_mask = torch.ones(2, 5, dtype=torch.long)
@@ -320,19 +343,37 @@ def test_parakeet_compat_forwards_cache_aware_encoder_kwargs(monkeypatch) -> Non
     monkeypatch.setattr(
         GenerationMixin,
         "_prepare_model_inputs",
-        lambda self, *args, **kwargs: (
-            input_features,
-            "input_features",
-            dict(model_kwargs),
+        Mock(
+            return_value=(
+                input_features,
+                "input_features",
+                dict(model_kwargs),
+            )
         ),
     )
 
     calls = []
 
     class FakeModel(ParakeetRNNTGenerationMixin):
-        def get_audio_features(self, **kwargs):
-            calls.append(kwargs)
-            return SimpleNamespace(
+        def get_audio_features(
+            self,
+            *,
+            input_features: torch.Tensor,
+            attention_mask: torch.Tensor,
+            output_attention_mask: bool,
+            padding_cache: str,
+            num_lookahead_tokens: int,
+        ) -> NemotronAsrStreamingEncoderModelOutput:
+            calls.append(
+                dict(
+                    input_features=input_features,
+                    attention_mask=attention_mask,
+                    output_attention_mask=output_attention_mask,
+                    padding_cache=padding_cache,
+                    num_lookahead_tokens=num_lookahead_tokens,
+                )
+            )
+            return NemotronAsrStreamingEncoderModelOutput(
                 attention_mask=torch.ones(2, 3, dtype=torch.long),
                 last_hidden_state=torch.zeros(2, 3, 4),
             )

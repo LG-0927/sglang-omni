@@ -10,12 +10,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import torch
+from numpy.typing import NDArray
 
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
 from sglang_omni.models.nemotron3_5_asr.request_builders import (
     build_nemotron3_5_asr_result,
 )
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import ResourceUsage, TimedChunk
 
 PCM16_BYTES_PER_SAMPLE = 2
@@ -45,7 +46,7 @@ class Nemotron3_5ASRStreamingChunkSpec:
 
 @dataclass(frozen=True, slots=True)
 class Nemotron3_5ASRAudioWindow:
-    waveform: np.ndarray
+    waveform: NDArray[np.float32]
     model_chunk_index: int
     is_first: bool
 

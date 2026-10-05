@@ -111,7 +111,7 @@ import wave
 import websockets
 
 
-async def transcribe(path):
+async def transcribe(path: str) -> None:
     with wave.open(path, "rb") as audio:
         assert (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()) == (1, 2, 16000)
         pcm = audio.readframes(audio.getnframes())
@@ -124,7 +124,7 @@ async def transcribe(path):
         }))
         assert json.loads(await websocket.recv())["type"] == "session.updated"
 
-        async def receive():
+        async def receive() -> None:
             while True:
                 event = json.loads(await websocket.recv())
                 if event["type"] == "error":
@@ -135,6 +135,8 @@ async def transcribe(path):
                     print("\nFinal:", event["text"])
                 elif event["type"] == "sglang.input_audio.drained":
                     return
+                else:
+                    pass
 
         reader = asyncio.create_task(receive())
         for sequence, offset in enumerate(range(0, len(pcm), 640)):

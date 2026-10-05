@@ -5,29 +5,35 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 
 from sglang_omni.models.nemotron3_5_asr.text import (
     clean_nemotron_text,
     resolve_nemotron_locale,
 )
 from sglang_omni.preprocessing.transcription import prepare_audio
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import StagePayload
 
 NEMOTRON_ASR_SAMPLE_RATE = 16000
 
 
 @dataclass(slots=True)
 class Nemotron3_5ASRRequest:
-    waveform: np.ndarray
+    waveform: NDArray[np.float32]
     duration_s: float
     language: str
     stage_payload: StagePayload
     max_new_tokens: int | None = None
     started_at_s: float = 0.0
+
+
+class NemotronRequestBuilder(Protocol):
+    def __call__(self, payload: StagePayload) -> Nemotron3_5ASRRequest: ...
 
 
 def normalize_nemotron_language(
@@ -96,7 +102,7 @@ def validate_nemotron_greedy_params(params: Mapping[str, object]) -> int | None:
 
 def make_nemotron3_5_asr_request_builder(
     *, prompt_dictionary: Mapping[str, int]
-) -> Callable[[StagePayload], Nemotron3_5ASRRequest]:
+) -> NemotronRequestBuilder:
     """Build requests using the processor's authoritative locale mapping."""
 
     prompt_dictionary = dict(prompt_dictionary)
@@ -137,12 +143,12 @@ def build_nemotron3_5_asr_result(
     duration_s: float,
     asr_latency_s: float,
     model_latency_s: float,
-    extra_data: Mapping[str, object] | None = None,
+    extra_data: Mapping[str, int | list[int]] | None = None,
 ) -> StagePayload:
     """Build the common final payload for offline and streaming ASR."""
 
     raw_text = raw_text.strip()
-    data: dict[str, object] = {
+    data: dict[str, str | float | int | None | list[int] | dict[str, float]] = {
         "text": clean_nemotron_text(raw_text),
         "raw_text": raw_text,
         "language": resolve_nemotron_locale(raw_text, requested_language),
@@ -167,6 +173,7 @@ def build_nemotron3_5_asr_result(
 __all__ = [
     "NEMOTRON_ASR_SAMPLE_RATE",
     "Nemotron3_5ASRRequest",
+    "NemotronRequestBuilder",
     "build_nemotron3_5_asr_result",
     "make_nemotron3_5_asr_request_builder",
     "normalize_nemotron_language",

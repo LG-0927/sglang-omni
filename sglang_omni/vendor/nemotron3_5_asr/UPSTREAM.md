@@ -43,8 +43,8 @@ backport once the repository dependency moves to Transformers 5.13 or newer.
 
 Mixed-progress batching is implemented outside this backport in
 [`../../models/nemotron3_5_asr/encoder.py`](../../models/nemotron3_5_asr/encoder.py)
-and [`../../models/nemotron3_5_asr/attention_cache.py`](../../models/nemotron3_5_asr/attention_cache.py).
-The runner calls the encoder adapter only for mixed-progress batches, reusing
+and [`../../models/nemotron3_5_asr/cache.py`](../../models/nemotron3_5_asr/cache.py).
+The runner calls the encoder adapter for streaming batches, reusing
 the loaded model's layers and projections without replacing its modules.
 When removing this backport, migrate the adapter's model and output-type imports
 along with the runner imports, and retain its per-request cache and mask logic.

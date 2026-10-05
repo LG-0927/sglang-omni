@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Model registration and stage request isolation."""
 from __future__ import annotations
 
 import threading
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -11,7 +11,8 @@ import pytest
 from sglang_omni.models.nemotron3_5_asr import request_builders, stages
 from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.preprocessing.transcription import PreparedAudio
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 
 
@@ -59,15 +60,17 @@ def test_factory_transcribes_single_and_batched_requests(
         if model_error
         else lambda requests: [request.stage_payload for request in requests]
     )
-    monkeypatch.setattr(
-        stages, "Nemotron3_5ASRModelRunner", lambda *args, **kwargs: runner
-    )
+    monkeypatch.setattr(stages, "Nemotron3_5ASRModelRunner", Mock(return_value=runner))
     monkeypatch.setattr(
         request_builders,
         "prepare_audio",
-        lambda *args, **kwargs: SimpleNamespace(
-            waveform=np.zeros(1600, dtype=np.float32),
-            duration_s=0.1,
+        Mock(
+            return_value=PreparedAudio(
+                waveform=np.zeros(1600, dtype=np.float32),
+                sample_rate=16000,
+                duration_s=0.1,
+                fingerprint="test-audio",
+            )
         ),
     )
     scheduler = stages.create_nemotron3_5_asr_executor("checkpoint", device="cpu")
@@ -98,6 +101,8 @@ def test_factory_transcribes_single_and_batched_requests(
             assert isinstance(outputs[name].data, ValueError)
             assert outputs[name].type == "error"
             continue
+        else:
+            pass
         assert outputs[name].type == ("error" if model_error else "result")
         if model_error:
             assert str(outputs[name].data) == "model failed"

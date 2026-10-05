@@ -1,25 +1,61 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Offline batching preserves request order and generation settings."""
 
 from __future__ import annotations
 
 import threading
+from typing import Literal, TypedDict
 
 import numpy as np
 import torch
+from numpy.typing import NDArray
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 
 from sglang_omni.models.nemotron3_5_asr.model_runner import Nemotron3_5ASRModelRunner
 from sglang_omni.models.nemotron3_5_asr.request_builders import Nemotron3_5ASRRequest
-from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.request import OmniRequest, StagePayload
+
+
+class ProcessorCall(TypedDict):
+    audio: list[NDArray[np.float32]]
+    sampling_rate: int
+    language: list[str]
+    padding: Literal["longest"]
+    return_tensors: Literal["pt"]
+
+
+class GenerationCall(TypedDict):
+    input_features: torch.Tensor
+    attention_mask: torch.Tensor
+    prompt_ids: torch.Tensor
+    num_lookahead_tokens: int
+    return_dict_in_generate: bool
+    max_new_tokens: int | None
 
 
 class FakeProcessor:
     def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[ProcessorCall] = []
 
-    def __call__(self, audio: list[np.ndarray], **kwargs: object) -> BatchFeature:
-        self.calls.append({"audio": audio, **kwargs})
+    def __call__(
+        self,
+        audio: list[NDArray[np.float32]],
+        *,
+        sampling_rate: int,
+        language: list[str],
+        padding: Literal["longest"],
+        return_tensors: Literal["pt"],
+    ) -> BatchFeature:
+        self.calls.append(
+            dict(
+                audio=audio,
+                sampling_rate=sampling_rate,
+                language=language,
+                padding=padding,
+                return_tensors=return_tensors,
+            )
+        )
         batch_size = len(audio)
         return BatchFeature(
             {
@@ -40,12 +76,28 @@ class FakeProcessor:
 
 class FakeModel:
     def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[GenerationCall] = []
 
     def generate(
-        self, *, input_features: torch.Tensor, **kwargs: object
+        self,
+        *,
+        input_features: torch.Tensor,
+        attention_mask: torch.Tensor,
+        prompt_ids: torch.Tensor,
+        num_lookahead_tokens: int,
+        return_dict_in_generate: bool,
+        max_new_tokens: int | None = None,
     ) -> GenerateDecoderOnlyOutput:
-        self.calls.append({"input_features": input_features, **kwargs})
+        self.calls.append(
+            dict(
+                input_features=input_features,
+                attention_mask=attention_mask,
+                prompt_ids=prompt_ids,
+                num_lookahead_tokens=num_lookahead_tokens,
+                return_dict_in_generate=return_dict_in_generate,
+                max_new_tokens=max_new_tokens,
+            )
+        )
         batch_size = input_features.shape[0]
         return GenerateDecoderOnlyOutput(
             sequences=torch.arange(batch_size * 3).reshape(batch_size, 3)

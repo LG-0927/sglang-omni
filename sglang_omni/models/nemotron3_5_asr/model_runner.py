@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from numpy.typing import NDArray
 from transformers.cache_utils import DynamicCache
 
 from sglang_omni.models.nemotron3_5_asr.decoder import (
@@ -30,13 +31,19 @@ from sglang_omni.models.nemotron3_5_asr.text import (
     resolve_nemotron_locale,
 )
 from sglang_omni.models.weight_loader import resolve_dtype
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.vendor.nemotron3_5_asr import (
+from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron3_5_asr import (
     Nemotron3_5AsrConfig,
-    Nemotron3_5AsrForRNNT,
-    Nemotron3_5AsrProcessor,
+)
+from sglang_omni.vendor.nemotron3_5_asr.generation_nemotron3_5_asr import (
     Nemotron3_5AsrRNNTDecoderCache,
+)
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron3_5_asr import (
+    Nemotron3_5AsrForRNNT,
+)
+from sglang_omni.vendor.nemotron3_5_asr.processing_nemotron3_5_asr import (
+    Nemotron3_5AsrProcessor,
 )
 
 
@@ -91,7 +98,7 @@ class Nemotron3_5ASRModelRunner:
             local_files_only=True,
         ).to(self.device)
         self.model.eval()
-        # Note (Li Gang): generate mutates model-owned decoder progress.
+        # note (Li Gang): generate mutates model-owned decoder progress.
         self.model_lock = threading.Lock()
 
     @property
@@ -139,7 +146,7 @@ class Nemotron3_5ASRModelRunner:
 
     def prepare_streaming_chunk(
         self,
-        waveform: np.ndarray,
+        waveform: NDArray[np.float32],
         *,
         language: str,
         is_first: bool,
@@ -298,7 +305,7 @@ class Nemotron3_5ASRModelRunner:
         else:
             pass
 
-        # Note (Li Gang): generate applies one token limit to the entire batch.
+        # note (Li Gang): generate applies one token limit to the entire batch.
         groups: dict[int | None, list[tuple[int, Nemotron3_5ASRRequest]]] = defaultdict(
             list
         )

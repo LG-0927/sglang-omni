@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""PCM fragmentation and streaming window boundaries."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ from dataclasses import asdict
 import numpy as np
 import pytest
 import torch
+from numpy.typing import NDArray
 from transformers.cache_utils import DynamicCache
 
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
@@ -22,8 +24,10 @@ from sglang_omni.models.nemotron3_5_asr.streaming import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.vendor.nemotron3_5_asr import (
+from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron3_5_asr import (
     Nemotron3_5AsrConfig,
+)
+from sglang_omni.vendor.nemotron3_5_asr.generation_nemotron3_5_asr import (
     Nemotron3_5AsrRNNTDecoderCache,
 )
 
@@ -57,7 +61,9 @@ def make_payload(request_id: str, *, language: str = "en-US") -> StagePayload:
     return payload
 
 
-def make_pcm_item(request_id: str, samples: np.ndarray) -> tuple[str, StreamItem]:
+def make_pcm_item(
+    request_id: str, samples: NDArray[np.int16]
+) -> tuple[str, StreamItem]:
     return request_id, StreamItem(
         chunk_id=0,
         data=torch.from_numpy(samples.astype(np.int16, copy=False)),
@@ -87,7 +93,7 @@ class FakeRunner(Nemotron3_5ASRModelRunner):
         return make_decode_state()
 
     def prepare_streaming_chunk(
-        self, waveform: np.ndarray, *, language: str, is_first: bool
+        self, waveform: NDArray[np.float32], *, language: str, is_first: bool
     ) -> Nemotron3_5ASRPreparedChunk:
         return Nemotron3_5ASRPreparedChunk(
             input_features=torch.from_numpy(waveform),

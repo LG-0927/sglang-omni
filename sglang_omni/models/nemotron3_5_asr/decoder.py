@@ -8,9 +8,13 @@ from dataclasses import dataclass, field
 import torch
 from transformers.cache_utils import DynamicCache
 
-from sglang_omni.vendor.nemotron3_5_asr import (
-    Nemotron3_5AsrForRNNT,
+from sglang_omni.vendor.nemotron3_5_asr.generation_nemotron3_5_asr import (
     Nemotron3_5AsrRNNTDecoderCache,
+)
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron3_5_asr import (
+    Nemotron3_5AsrForRNNT,
+)
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron_asr_streaming import (
     NemotronAsrStreamingEncoderCausalConvPaddingCache,
 )
 

@@ -44,7 +44,7 @@ class ModelTask:
     chunk: TimedChunk | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
     future: Future[TaskResult] = field(default_factory=Future)
-    ready_since: float = field(default_factory=time.monotonic)
+    ready_since_seconds: float = field(default_factory=time.monotonic)
     previous_text: str = ""
     is_first_output: bool = False
 
@@ -79,7 +79,7 @@ class NemotronBatchEngine:
         self.max_pcm_bytes = max_pcm_bytes
         self.max_history_tokens = max_history_tokens
         self.max_text_bytes = max_text_bytes
-        self.session_reservation = (
+        self.session_reservation_bytes = (
             runner.streaming_state_budget_bytes
             + max_pcm_bytes
             + max_history_tokens * 96
@@ -251,7 +251,8 @@ class NemotronBatchEngine:
         if identity in self.states:
             raise ValueError("Nemotron session already opened")
         elif len(self.states) >= self.max_open_sessions or (
-            (len(self.states) + 1) * self.session_reservation > self.max_state_bytes
+            (len(self.states) + 1) * self.session_reservation_bytes
+            > self.max_state_bytes
         ):
             raise RuntimeError("Nemotron session state reservation exhausted")
         else:
@@ -282,7 +283,7 @@ class NemotronBatchEngine:
             task.previous_text = state.clean_text
             task.is_first_output = not state.clean_text
             state.append_chunk(chunk, self.max_pcm_bytes)
-            task.ready_since = time.monotonic()
+            task.ready_since_seconds = time.monotonic()
             self.ready[identity] = task
             self.complete_if_drained(identity, task, state)
 
@@ -290,7 +291,7 @@ class NemotronBatchEngine:
         self, identity: SessionIdentity, state: Nemotron3_5ASRStreamState
     ) -> None:
         with self.condition:
-            self.usage_snapshots[identity] = state.usage(self.session_reservation)
+            self.usage_snapshots[identity] = state.usage(self.session_reservation_bytes)
 
     def complete_if_drained(
         self,
@@ -388,7 +389,7 @@ class NemotronBatchEngine:
                     state.clean_text = text
                     state.detected_language = result.languages[index]
                     state.model_compute_s += result.elapsed_s / len(lanes)
-                    task.ready_since = time.monotonic()
+                    task.ready_since_seconds = time.monotonic()
                     self.complete_if_drained(identity, task, state)
             except Exception as exc:
                 self.release(identity, exc)
@@ -452,7 +453,7 @@ class NemotronBatchEngine:
                 list(self.ready.values()) if kind == "stream" else list(self.offline)
             )
             remaining = (
-                min(task.ready_since for task in tasks)
+                min(task.ready_since_seconds for task in tasks)
                 + self.max_batch_wait_s
                 - time.monotonic()
             )

@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from typing import Literal
 
+import numpy as np
 import pytest
 
 from sglang_omni.models.nemotron3_5_asr.batch_engine import NemotronBatchEngine
+from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
+from sglang_omni.models.nemotron3_5_asr.model_runner import (
+    Nemotron3_5ASRPreparedChunk,
+    Nemotron3_5ASRStreamingBatchResult,
+)
+from sglang_omni.models.nemotron3_5_asr.request_builders import Nemotron3_5ASRRequest
 from sglang_omni.models.nemotron3_5_asr.session import NemotronSessionScheduler
 from sglang_omni.models.nemotron3_5_asr.streaming import AppendResult
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -57,7 +65,7 @@ def make_chunk(sequence: int, samples: int = 4040, *, eos: bool = False) -> Time
 
 def payload_for(
     identity: SessionIdentity,
-    operation: str,
+    operation: Literal["open", "append", "close"],
     sequence: int = 0,
     samples: int = 4040,
     *,
@@ -198,8 +206,19 @@ def test_prefix_failure_and_inflight_cancel_leave_other_lane_healthy(
     entered, proceed = threading.Event(), threading.Event()
     original = runner.run_streaming_batch
 
-    def blocked(*args, **kwargs):
-        result = original(*args, **kwargs)
+    def blocked(
+        states: Sequence[Nemotron3_5ASRDecodeState],
+        chunks: Sequence[Nemotron3_5ASRPreparedChunk],
+        *,
+        requested_languages: Sequence[str],
+        max_new_tokens: Sequence[int | None] | None = None,
+    ) -> Nemotron3_5ASRStreamingBatchResult:
+        result = original(
+            states,
+            chunks,
+            requested_languages=requested_languages,
+            max_new_tokens=max_new_tokens,
+        )
         entered.set()
         assert proceed.wait(5)
         result.clean_texts[0] = "changed"
@@ -276,10 +295,21 @@ def test_shutdown_releases_waiting_tickets_before_forward_returns(
     entered, proceed = threading.Event(), threading.Event()
     original = runner.run_streaming_batch
 
-    def blocked(*args, **kwargs):
+    def blocked(
+        states: Sequence[Nemotron3_5ASRDecodeState],
+        chunks: Sequence[Nemotron3_5ASRPreparedChunk],
+        *,
+        requested_languages: Sequence[str],
+        max_new_tokens: Sequence[int | None] | None = None,
+    ) -> Nemotron3_5ASRStreamingBatchResult:
         entered.set()
         assert proceed.wait(5)
-        return original(*args, **kwargs)
+        return original(
+            states,
+            chunks,
+            requested_languages=requested_languages,
+            max_new_tokens=max_new_tokens,
+        )
 
     monkeypatch.setattr(runner, "run_streaming_batch", blocked)
     identity = SessionIdentity("stop")
@@ -328,26 +358,44 @@ def test_budget_failure_and_decode_limit_do_not_accumulate_pcm() -> None:
 def test_offline_batch_and_stream_use_one_owner_and_cancel_before_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import SimpleNamespace
-
     runner = FakeRunner()
     engine = make_engine(runner, batch_size=2, wait_ms=10000)
     calls = []
     owner_threads = []
     original = runner.run_streaming_batch
 
-    def stream(*args, **kwargs):
+    def stream(
+        states: Sequence[Nemotron3_5ASRDecodeState],
+        chunks: Sequence[Nemotron3_5ASRPreparedChunk],
+        *,
+        requested_languages: Sequence[str],
+        max_new_tokens: Sequence[int | None] | None = None,
+    ) -> Nemotron3_5ASRStreamingBatchResult:
         owner_threads.append(threading.get_ident())
-        return original(*args, **kwargs)
+        return original(
+            states,
+            chunks,
+            requested_languages=requested_languages,
+            max_new_tokens=max_new_tokens,
+        )
 
-    def offline(requests):
+    def offline(requests: Sequence[Nemotron3_5ASRRequest]) -> list[StagePayload]:
         owner_threads.append(threading.get_ident())
         calls.append([request.stage_payload.request_id for request in requests])
         return [request.stage_payload for request in requests]
 
     monkeypatch.setattr(runner, "run_streaming_batch", stream)
     monkeypatch.setattr(runner, "run_batch", offline)
-    engine.build_request = lambda payload: SimpleNamespace(stage_payload=payload)
+
+    def build_request(payload: StagePayload) -> Nemotron3_5ASRRequest:
+        return Nemotron3_5ASRRequest(
+            waveform=np.zeros(0, dtype=np.float32),
+            duration_s=0,
+            language="auto",
+            stage_payload=payload,
+        )
+
+    engine.build_request = build_request
     try:
         identities = [SessionIdentity("a"), SessionIdentity("b")]
         for identity in identities:
@@ -388,7 +436,13 @@ def test_fatal_owner_error_settles_every_future(
     runner = FakeRunner()
     engine = make_engine(runner, batch_size=2, wait_ms=10000)
 
-    def fatal(*args, **kwargs):
+    def fatal(
+        states: Sequence[Nemotron3_5ASRDecodeState],
+        chunks: Sequence[Nemotron3_5ASRPreparedChunk],
+        *,
+        requested_languages: Sequence[str],
+        max_new_tokens: Sequence[int | None] | None = None,
+    ) -> Nemotron3_5ASRStreamingBatchResult:
         raise SystemExit("fatal model error")
 
     monkeypatch.setattr(runner, "run_streaming_batch", fatal)

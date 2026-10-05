@@ -12,8 +12,10 @@ from sglang_omni.models.nemotron3_5_asr.cache import (
     NemotronBatchAttentionCache,
     NemotronBatchPaddingCache,
 )
-from sglang_omni.vendor.nemotron3_5_asr import (
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron3_5_asr import (
     Nemotron3_5AsrForRNNT,
+)
+from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron_asr_streaming import (
     NemotronAsrStreamingEncoderCausalConvPaddingCache,
 )
 
@@ -51,15 +53,15 @@ def encode_streaming_batch(
 
     attention_cache = NemotronBatchAttentionCache(attention_caches)
     padding_cache = NemotronBatchPaddingCache(padding_caches)
-    seq_length = hidden_states.shape[1]
+    sequence_length = hidden_states.shape[1]
     attention_mask = attention_cache.create_mask(
-        seq_length,
+        sequence_length,
         hidden_states.device,
         model.config.encoder_config.sliding_window - 1,
         num_lookahead_tokens,
     )
     position_embeddings = encoder.encode_positions(
-        hidden_states, cached_frames=attention_mask.shape[-1] - seq_length
+        hidden_states, cached_frames=attention_mask.shape[-1] - sequence_length
     )
     all_masked_rows = torch.all(~attention_mask, dim=-1)
     for encoder_layer in encoder.layers:
