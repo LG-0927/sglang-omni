@@ -28,6 +28,9 @@ from sglang_omni.scheduling.session import (
     StageSession,
 )
 
+INBOX_POLL_TIMEOUT_SECONDS: float = 0.05
+NOTIFICATION_POLL_TIMEOUT_SECONDS: float = 0.1
+
 
 class NemotronSessionHooks(SessionHooks):
     def __init__(self, engine: NemotronBatchEngine) -> None:
@@ -249,7 +252,7 @@ class NemotronSessionScheduler(SessionScheduler):
             self.finish_operation(message.request_id)
 
     def collect_inbox_messages(self) -> list[IncomingMessage]:
-        messages = [self.inbox.get(timeout=0.05)]
+        messages = [self.inbox.get(timeout=INBOX_POLL_TIMEOUT_SECONDS)]
         while len(messages) < self.engine.max_pending_tasks:
             try:
                 messages.append(self.inbox.get_nowait())
@@ -287,7 +290,7 @@ class NemotronSessionScheduler(SessionScheduler):
             while self.running or active_tasks:
                 try:
                     notification = await asyncio.wait_for(
-                        notifications.get(), timeout=0.1
+                        notifications.get(), timeout=NOTIFICATION_POLL_TIMEOUT_SECONDS
                     )
                 except asyncio.TimeoutError:
                     continue

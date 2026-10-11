@@ -24,6 +24,7 @@ from sglang_omni.models.nemotron3_5_asr.streaming import AppendResult
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
+    ResourceUsage,
     SessionIdentity,
     SessionOperation,
     TimedChunk,
@@ -174,9 +175,7 @@ def test_shutdown_during_inbox_transfer_settles_the_whole_batch(
         proceed.set()
         thread.join(5)
     assert not thread.is_alive() and not engine.thread.is_alive()
-    assert not scheduler.arrivals_by_request_id and not scheduler.cursors_by_session
-    assert not scheduler.append_cancel_events and not scheduler.open_sessions
-    assert not engine.states and not engine.tasks
+    assert engine.usage(identity) == ResourceUsage()
     assert runner.is_closed
 
 
@@ -266,9 +265,8 @@ def test_queued_operations_preserve_order_through_close_and_reopen() -> None:
             [0.4, 0.2525]
         )
         assert sum(message.data["eos"] for message in streams) == 2
-        assert not scheduler.arrivals_by_request_id
-        assert not scheduler.cursors_by_session
-        assert not scheduler.append_cancel_events
+        assert engine.usage(first) == ResourceUsage()
+        assert engine.usage(second) == ResourceUsage()
 
 
 def test_registered_arrival_order_survives_concurrent_inbox_puts(
@@ -312,8 +310,8 @@ def test_registered_arrival_order_survives_concurrent_inbox_puts(
 class PausedRunner(FakeRunner):
     def __init__(self) -> None:
         super().__init__()
-        self.entered = threading.Event()
-        self.proceed = threading.Event()
+        self.entered: threading.Event = threading.Event()
+        self.proceed: threading.Event = threading.Event()
 
     def run_streaming_batch(
         self,
@@ -360,7 +358,7 @@ def test_scheduler_cancelled_append_and_queued_close_do_not_leak() -> None:
         assert not {blocked.request_id, queued.request_id} & {
             message.request_id for message in messages
         }
-        assert first not in scheduler.open_sessions
+        assert engine.usage(first) == ResourceUsage()
         reopened = SessionIdentity(first.id, first.open_index + 1)
         submit(scheduler, payload_for(reopened, "open"))
         assert scheduler.outbox.get(timeout=5).type == "result"
@@ -388,15 +386,14 @@ def test_scheduler_shutdown_waits_for_owner_before_releasing_busy_session() -> N
         submit(scheduler, payload_for(identity, "append", 1))
         scheduler.stop()
         assert thread.is_alive()
-        assert identity in scheduler.open_sessions
+        assert engine.usage(identity).bytes > 0
     finally:
         runner.proceed.set()
         scheduler.stop()
         thread.join(5)
     assert not thread.is_alive() and not engine.thread.is_alive()
-    assert not engine.tasks and not engine.states and not scheduler.open_sessions
-    assert not scheduler.arrivals_by_request_id and not scheduler.cursors_by_session
-    assert not scheduler.append_cancel_events
+    assert engine.usage(identity) == ResourceUsage()
+    assert runner.is_closed
 
 
 def test_scheduler_budget_failure_settles_following_operations() -> None:
@@ -416,8 +413,14 @@ def test_scheduler_budget_failure_settles_following_operations() -> None:
         assert len(errors) == 2
         assert any("PCM budget" in str(error) for error in errors)
         assert any("unknown session" in str(error) for error in errors)
-        assert bad not in scheduler.open_sessions
-        assert not scheduler.append_cancel_events
+        assert engine.usage(bad) == ResourceUsage()
+        submit(scheduler, payload_for(bad, "open"))
+        assert scheduler.outbox.get(timeout=5).type == "result"
+        submit(scheduler, payload_for(bad, "append", samples=4040, eos=True))
+        assert [scheduler.outbox.get(timeout=5).type for _ in range(2)] == [
+            "stream",
+            "result",
+        ]
 
 
 def test_scheduler_mixes_offline_requests_and_streaming_on_one_owner(
@@ -456,7 +459,16 @@ def test_scheduler_mixes_offline_requests_and_streaming_on_one_owner(
         assert sum(message.type == "result" for message in messages) == 4
         assert sum(message.type == "stream" for message in messages) == 2
         assert set(owner_threads) == {engine.thread.ident}
-        assert not scheduler.offline_cancel_events
+        for identity in identities:
+            submit(
+                scheduler,
+                StagePayload(identity.id + "-offline", OmniRequest(None), data=None),
+            )
+        repeated_results = [scheduler.outbox.get(timeout=5) for _ in identities]
+        assert all(message.type == "result" for message in repeated_results)
+        assert {message.request_id for message in repeated_results} == {
+            identity.id + "-offline" for identity in identities
+        }
 
 
 @pytest.mark.parametrize("concurrency,wait_ms", [(1, 0), (1, 2), (4, 2)])
