@@ -248,6 +248,15 @@ class NemotronSessionScheduler(SessionScheduler):
         finally:
             self.finish_operation(message.request_id)
 
+    def collect_inbox_messages(self) -> list[IncomingMessage]:
+        messages = [self.inbox.get(timeout=0.05)]
+        while len(messages) < self.engine.max_pending_tasks:
+            try:
+                messages.append(self.inbox.get_nowait())
+            except queue.Empty:
+                break
+        return messages
+
     async def run_workers(self, loop: asyncio.AbstractEventLoop) -> None:
         notifications: asyncio.Queue[IncomingMessage | asyncio.Task[None]] = (
             asyncio.Queue()
@@ -262,12 +271,13 @@ class NemotronSessionScheduler(SessionScheduler):
         async def bridge_inbox() -> None:
             while self.running:
                 try:
-                    message = await loop.run_in_executor(
-                        None, lambda: self.inbox.get(timeout=0.05)
+                    messages = await loop.run_in_executor(
+                        None, self.collect_inbox_messages
                     )
                 except queue.Empty:
                     continue
-                await notifications.put(message)
+                for message in messages:
+                    notifications.put_nowait(message)
 
         def completed(task: asyncio.Task[None]) -> None:
             notifications.put_nowait(task)

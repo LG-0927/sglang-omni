@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -113,6 +114,70 @@ def running_scheduler(
 
 def submit(scheduler: NemotronSessionScheduler, payload: StagePayload) -> None:
     scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+
+
+def test_inbox_transfer_is_bounded_and_preserves_fifo() -> None:
+    runner = FakeRunner()
+    engine = make_engine(runner)
+    engine.max_pending_tasks = 3
+    scheduler = NemotronSessionScheduler(
+        engine, max_concurrency=8, max_open_sessions=64, max_state_bytes=1 << 30
+    )
+    messages = [
+        IncomingMessage("first", "stream_chunk"),
+        IncomingMessage("second", "abort"),
+        IncomingMessage("third", "stream_done"),
+        IncomingMessage("fourth", "stream_chunk"),
+    ]
+    try:
+        for message in messages:
+            scheduler.inbox.put(message)
+        assert scheduler.collect_inbox_messages() == messages[:3]
+        assert scheduler.collect_inbox_messages() == messages[3:]
+        with pytest.raises(queue.Empty):
+            scheduler.collect_inbox_messages()
+    finally:
+        scheduler.stop()
+    assert runner.is_closed
+
+
+def test_shutdown_during_inbox_transfer_settles_the_whole_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeRunner()
+    engine = make_engine(runner)
+    scheduler = NemotronSessionScheduler(
+        engine, max_concurrency=8, max_open_sessions=64, max_state_bytes=1 << 30
+    )
+    identity = SessionIdentity("transfer-stop")
+    payloads = [payload_for(identity, "open")]
+    payloads.extend(payload_for(identity, "append", sequence) for sequence in range(16))
+    payloads.append(payload_for(identity, "close"))
+    for payload in payloads:
+        submit(scheduler, payload)
+    entered, proceed = threading.Event(), threading.Event()
+    collect = scheduler.collect_inbox_messages
+
+    def paused_collect() -> list[IncomingMessage]:
+        messages = collect()
+        entered.set()
+        assert proceed.wait(5)
+        return messages
+
+    monkeypatch.setattr(scheduler, "collect_inbox_messages", paused_collect)
+    thread = threading.Thread(target=scheduler.start)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        scheduler.stop()
+    finally:
+        proceed.set()
+        thread.join(5)
+    assert not thread.is_alive() and not engine.thread.is_alive()
+    assert not scheduler.arrivals_by_request_id and not scheduler.cursors_by_session
+    assert not scheduler.append_cancel_events and not scheduler.open_sessions
+    assert not engine.states and not engine.tasks
+    assert runner.is_closed
 
 
 def test_real_scheduler_forms_one_eight_session_runner_call() -> None:
